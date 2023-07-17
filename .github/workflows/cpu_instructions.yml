@@ -2,7 +2,7 @@ name: CPU instructions
 run-name: CPU instructions branch=${{ github.ref_name }}
 
 on:
-  workflow_dispatch
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
