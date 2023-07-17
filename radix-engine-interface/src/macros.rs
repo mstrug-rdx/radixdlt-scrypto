@@ -1,4 +1,4 @@
-// TODO: Move this logic into preprocessor. It probably needs to be implemented as a procedural macro.
+// TODO: Move this logic into procedural macro.
 #[macro_export]
 macro_rules! access_and_or {
     (|| $tt:tt) => {{
@@ -64,7 +64,7 @@ macro_rules! access_and_or {
 macro_rules! access_rule_node {
     // Handle leaves
     ($rule:ident $args:tt) => {{
-        $crate::blueprints::resource::AccessRuleNode::ProofRule($rule $args)
+        $rule $args
     }};
 
     // Handle group
@@ -92,4 +92,28 @@ macro_rules! rule {
     ($($tt:tt)+) => {{
         $crate::blueprints::resource::AccessRule::Protected($crate::access_rule_node!($($tt)+))
     }};
+}
+
+#[macro_export]
+macro_rules! role_entry {
+    ($roles: expr, $role: expr, $rule:expr) => {{
+        $roles.define_immutable_role($role, $rule);
+    }};
+    ($roles: expr, $role: expr, $rule:expr, updatable) => {{
+        $roles.define_mutable_role($role, $rule);
+    }};
+}
+
+#[macro_export]
+macro_rules! roles2 {
+    ( ) => ({
+        $crate::blueprints::resource::RolesInit::new()
+    });
+    ( $($role:expr => $rule:expr $(, $updatable:ident)?;)* ) => ({
+        let mut roles = $crate::blueprints::resource::RolesInit::new();
+        $(
+            role_entry!(roles, $role, $rule $(, $updatable)? );
+        )*
+        roles
+    })
 }

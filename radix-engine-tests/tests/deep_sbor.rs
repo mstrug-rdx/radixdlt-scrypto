@@ -1,7 +1,6 @@
-use radix_engine::errors::{InterpreterError, KernelError, RuntimeError};
+use radix_engine::errors::{RuntimeError, SystemUpstreamError};
 use radix_engine::transaction::TransactionReceipt;
 use radix_engine::types::*;
-use radix_engine_interface::blueprints::resource::*;
 use scrypto_unit::*;
 use transaction::builder::ManifestBuilder;
 
@@ -14,7 +13,7 @@ fn deep_auth_rules_on_component_create_creation_fails() {
     // Act 1 - Small Depth
     let depth = 10usize;
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(
             package_address,
             "DeepAuthRulesOnCreate",
@@ -28,7 +27,7 @@ fn deep_auth_rules_on_component_create_creation_fails() {
     // Act 2 - Very Large Depth - we get a panic at encoding time in the Scrypto WASM
     let depth = 100usize;
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(
             package_address,
             "DeepAuthRulesOnCreate",
@@ -37,12 +36,7 @@ fn deep_auth_rules_on_component_create_creation_fails() {
         )
         .build();
     let receipt = test_runner.execute_manifest(manifest, vec![]);
-    receipt.expect_specific_failure(|f| {
-        matches!(
-            f,
-            RuntimeError::KernelError(KernelError::WasmRuntimeError(_))
-        )
-    });
+    receipt.expect_specific_failure(|f| f.to_string().contains("MaxDepthExceeded"));
 
     // Act 3 - I'd hoped for a third style of error - where scrypto can encode it but
     //         It's an error when it's put in the substate
@@ -57,7 +51,7 @@ fn setting_struct_with_deep_recursive_data_panics_inside_component() {
     let package_address = test_runner.compile_and_publish("./tests/blueprints/deep_sbor");
 
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(package_address, "DeepStruct", "new", manifest_args!())
         .build();
     let receipt = test_runner.execute_manifest(manifest, vec![]);
@@ -66,7 +60,7 @@ fn setting_struct_with_deep_recursive_data_panics_inside_component() {
     // Act 1 - Small Depth - Succeeds
     let depth = 10usize;
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_method(
             component_address,
             "set_depth",
@@ -79,7 +73,7 @@ fn setting_struct_with_deep_recursive_data_panics_inside_component() {
     // Act 2 - Very Large Depth - we get a panic at encoding time in the Scrypto WASM
     let depth = 100usize;
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_method(
             component_address,
             "set_depth",
@@ -87,12 +81,7 @@ fn setting_struct_with_deep_recursive_data_panics_inside_component() {
         )
         .build();
     let receipt = test_runner.execute_manifest(manifest, vec![]);
-    receipt.expect_specific_failure(|f| {
-        matches!(
-            f,
-            RuntimeError::KernelError(KernelError::WasmRuntimeError(_))
-        )
-    });
+    receipt.expect_specific_failure(|f| f.to_string().contains("MaxDepthExceeded"));
 
     // Act 3 - I'd hoped for a third style of error - where scrypto can encode it but
     //         It's an error when it's put in the substate
@@ -115,7 +104,7 @@ fn malicious_component_replying_with_large_payload_is_handled_well_by_engine() {
     receipt.expect_specific_failure(|f| {
         matches!(
             f,
-            RuntimeError::InterpreterError(InterpreterError::ScryptoOutputDecodeError(
+            RuntimeError::SystemUpstreamError(SystemUpstreamError::OutputDecodeError(
                 DecodeError::MaxDepthExceeded(_)
             ))
         )
@@ -131,15 +120,14 @@ fn publish_wasm_with_deep_sbor_response_and_execute_it(depth: usize) -> Transact
     );
     let package_address = test_runner.publish_package(
         code,
-        single_function_package_schema("Test", "f"),
+        single_function_package_definition("Test", "f"),
         BTreeMap::new(),
-        BTreeMap::new(),
-        AccessRulesConfig::new(),
+        OwnerRole::None,
     );
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(package_address, "Test", "f", manifest_args!())
         .build();
     test_runner.execute_manifest(manifest, vec![])

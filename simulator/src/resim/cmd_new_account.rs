@@ -1,14 +1,15 @@
 use clap::Parser;
 use colored::*;
 use radix_engine::types::*;
+use radix_engine_interface::api::node_modules::ModuleConfig;
 use radix_engine_interface::blueprints::resource::{
     require, FromPublicKey, NonFungibleDataSchema,
-    NonFungibleResourceManagerCreateWithInitialSupplyManifestInput, ResourceMethodAuthKey,
+    NonFungibleResourceManagerCreateWithInitialSupplyManifestInput, ResourceAction,
     NON_FUNGIBLE_RESOURCE_MANAGER_BLUEPRINT,
     NON_FUNGIBLE_RESOURCE_MANAGER_CREATE_WITH_INITIAL_SUPPLY_IDENT,
 };
 use radix_engine_interface::network::NetworkDefinition;
-use radix_engine_interface::rule;
+use radix_engine_interface::{metadata, metadata_init, rule};
 use rand::Rng;
 use utils::ContextualDisplay;
 
@@ -37,13 +38,13 @@ struct EmptyStruct;
 impl NewAccount {
     pub fn run<O: std::io::Write>(&self, out: &mut O) -> Result<(), Error> {
         let secret = rand::thread_rng().gen::<[u8; 32]>();
-        let private_key = EcdsaSecp256k1PrivateKey::from_bytes(&secret).unwrap();
+        let private_key = Secp256k1PrivateKey::from_bytes(&secret).unwrap();
         let public_key = private_key.public_key();
         let auth_global_id = NonFungibleGlobalId::from_public_key(&public_key);
         let withdraw_auth = rule!(require(auth_global_id));
         let manifest = ManifestBuilder::new()
-            .lock_fee(FAUCET_COMPONENT, 100.into())
-            .new_account(withdraw_auth)
+            .lock_fee(FAUCET, 5000u32.into())
+            .new_account_advanced(OwnerRole::Fixed(withdraw_auth))
             .build();
 
         let receipt = handle_manifest(
@@ -56,7 +57,7 @@ impl NewAccount {
             out,
         )?;
 
-        let bech32_encoder = Bech32Encoder::new(&NetworkDefinition::simulator());
+        let address_bech32_encoder = AddressBech32Encoder::new(&NetworkDefinition::simulator());
 
         if let Some(ref receipt) = receipt {
             let commit_result = receipt.expect_commit(true);
@@ -66,31 +67,36 @@ impl NewAccount {
 
             let account = commit_result.new_component_addresses()[0];
             let manifest = ManifestBuilder::new()
-                .lock_fee(FAUCET_COMPONENT, 100.into())
-                .call_method(FAUCET_COMPONENT, "free", manifest_args!())
-                .add_instruction(Instruction::CallFunction {
-                    package_address: RESOURCE_MANAGER_PACKAGE,
+                .lock_fee(FAUCET, 5000u32.into())
+                .call_method(FAUCET, "free", manifest_args!())
+                .add_instruction(InstructionV1::CallFunction {
+                    package_address: RESOURCE_PACKAGE.into(),
                     blueprint_name: NON_FUNGIBLE_RESOURCE_MANAGER_BLUEPRINT.to_string(),
                     function_name: NON_FUNGIBLE_RESOURCE_MANAGER_CREATE_WITH_INITIAL_SUPPLY_IDENT
                         .to_string(),
-                    args: to_manifest_value(&NonFungibleResourceManagerCreateWithInitialSupplyManifestInput {
+                    args: to_manifest_value_and_unwrap!(&NonFungibleResourceManagerCreateWithInitialSupplyManifestInput {
+                        owner_role: OwnerRole::None,
                         id_type: NonFungibleIdType::Integer,
+                        track_total_supply: false,
                         non_fungible_schema: NonFungibleDataSchema::new_schema::<()>(),
-                        metadata: btreemap!(
-                            "name".to_owned() => "Owner Badge".to_owned()
+                        metadata: metadata!(
+                            init {
+                                "name" => "Owner Badge".to_owned(), locked;
+                            }
                         ),
                         access_rules: btreemap!(
-                            ResourceMethodAuthKey::Withdraw => (rule!(allow_all), rule!(deny_all))
+                            ResourceAction::Withdraw => (rule!(allow_all), rule!(deny_all))
                         ),
                         entries: btreemap!(
-                            NonFungibleLocalId::integer(1) => (to_manifest_value(&EmptyStruct {}) ,),
+                            NonFungibleLocalId::integer(1) => (to_manifest_value_and_unwrap!(&EmptyStruct {}) ,),
                         ),
+                        address_reservation: None,
                     }),
                 })
                 .0
                 .call_method(
                     account,
-                    "deposit_batch",
+                    "try_deposit_batch_or_refund",
                     manifest_args!(ManifestExpression::EntireWorktop),
                 )
                 .build();
@@ -112,7 +118,7 @@ impl NewAccount {
             writeln!(
                 out,
                 "Account component address: {}",
-                account.display(&bech32_encoder).to_string().green()
+                account.display(&address_bech32_encoder).to_string().green()
             )
             .map_err(Error::IOError)?;
             writeln!(out, "Public key: {}", public_key.to_string().green())
@@ -127,7 +133,7 @@ impl NewAccount {
                 out,
                 "Owner badge: {}",
                 owner_badge
-                    .to_canonical_string(&Bech32Encoder::for_simulator())
+                    .to_canonical_string(&AddressBech32Encoder::for_simulator())
                     .green()
             )
             .map_err(Error::IOError)?;

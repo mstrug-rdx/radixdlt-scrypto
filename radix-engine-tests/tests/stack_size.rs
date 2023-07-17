@@ -1,7 +1,7 @@
 use radix_engine::blueprints::access_controller::AccessControllerError;
 use radix_engine::blueprints::resource::NonFungibleResourceManagerError;
 use radix_engine::errors::*;
-use radix_engine::system::kernel_modules::auth::AuthError;
+use radix_engine::system::system_modules::auth::AuthError;
 
 // This file is supposed collect tests that help monitoring and debugging stack usage.
 
@@ -14,9 +14,9 @@ use radix_engine::system::kernel_modules::auth::AuthError;
     - before - size of CallFrameError reaches almost 100
       pub enum CallFrameError {
         OffsetDoesNotExist(OffsetDoesNotExist),      <--- OffsetDoesNotExist size 64
-        RENodeNotVisible(RENodeId),
-        RENodeNotOwned(RENodeId),
-        MovingLockedRENode(RENodeId),
+        RENodeNotVisible(NodeId),
+        RENodeNotOwned(NodeId),
+        MovingLockedRENode(NodeId),
         FailedToMoveSubstateToTrack(TrackError),     <--- TrackError size 88
       }
 
@@ -24,9 +24,9 @@ use radix_engine::system::kernel_modules::auth::AuthError;
 
       pub enum CallFrameError {
         OffsetDoesNotExist(Box<OffsetDoesNotExist>),
-        RENodeNotVisible(RENodeId),
-        RENodeNotOwned(RENodeId),
-        MovingLockedRENode(RENodeId),
+        RENodeNotVisible(NodeId),
+        RENodeNotOwned(NodeId),
+        MovingLockedRENode(NodeId),
         FailedToMoveSubstateToTrack(Box<TrackError>),
       }
 */
@@ -59,8 +59,8 @@ fn test_error_enum_sizes() {
     print_size!(KernelError);
     print_size!(CallFrameError);
     print_size!(SystemError);
-    print_size!(InterpreterError);
-    print_size!(ModuleError);
+    print_size!(SystemUpstreamError);
+    print_size!(SystemModuleError);
     print_size!(ApplicationError);
     print_size!(AuthError);
     print_size!(AccessControllerError);
@@ -70,8 +70,8 @@ fn test_error_enum_sizes() {
     check_size!(KernelError, 100);
     check_size!(CallFrameError, 100);
     check_size!(SystemError, 100);
-    check_size!(InterpreterError, 100);
-    check_size!(ModuleError, 100);
+    check_size!(SystemUpstreamError, 100);
+    check_size!(SystemModuleError, 100);
     check_size!(ApplicationError, 100);
     check_size!(AuthError, 100);
     check_size!(AccessControllerError, 100);

@@ -3,15 +3,17 @@
 
 [package]
 name = "simulator"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 
 [dependencies]
 sbor = { path = "../sbor" }
 radix-engine = { path = "../radix-engine" }
+radix-engine-store-interface = { path = "../radix-engine-store-interface" }
 radix-engine-stores = { path = "../radix-engine-stores", features = ["rocksdb"] }
+radix-engine-queries = { path = "../radix-engine-queries" }
 radix-engine-constants = { path = "../radix-engine-constants" }
-radix-engine-interface = { path = "../radix-engine-interface", features = ["serde"] }
+radix-engine-interface = { path = "../radix-engine-interface" }
 transaction = { path = "../transaction" }
 utils = { path = "../utils" }
 serde = { version = "1.0.137", features = ["derive"] }
@@ -19,7 +21,6 @@ serde_json = { version = "1.0.81" }
 clap = { version = "3.1.17", features = ["derive", "cargo"] }
 dirs = { version = "4.0.0" }
 colored = { version = "2.0.0" }
-uuid = { version = "1.0.0", features = ["v4"] }
 hex = { version = "0.4.3" }
 cargo_toml = { version = "0.11.5" }
 rand = { version = "0.8.5" }
@@ -41,9 +42,10 @@ name = "rtmc"
 path = "src/bin/rtmc.rs"
 bench = false
 
-[lib]
+[[bin]]
+name = "rtmd"
+path = "src/bin/rtmd.rs"
 bench = false
 
-[features]
-# This feature is unused and is only added as  a workaround for https://github.com/rust-lang/rust-analyzer/issues/8521
-serde = []
+[lib]
+bench = false

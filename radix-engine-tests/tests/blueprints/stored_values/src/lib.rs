@@ -7,14 +7,14 @@ mod invalid_init_stored_bucket {
     }
 
     impl InvalidInitStoredBucket {
-        pub fn create() -> ComponentAddress {
-            let bucket = ResourceBuilder::new_fungible()
+        pub fn create() -> Global<InvalidInitStoredBucket> {
+            let bucket = ResourceBuilder::new_fungible(OwnerRole::None)
                 .divisibility(DIVISIBILITY_NONE)
                 .restrict_withdraw(rule!(allow_all), rule!(deny_all))
                 .mint_initial_supply(Decimal::from(5));
 
             let component = InvalidInitStoredBucket { bucket }.instantiate();
-            component.globalize()
+            component.prepare_to_globalize(OwnerRole::None).globalize()
         }
     }
 }
@@ -30,8 +30,8 @@ mod invalid_stored_bucket_in_owned_component {
             self.bucket = Option::Some(bucket);
         }
 
-        pub fn create_bucket_in_owned_component() -> ComponentAddress {
-            let bucket = ResourceBuilder::new_fungible()
+        pub fn create_bucket_in_owned_component() -> Global<InvalidStoredBucketInOwnedComponent> {
+            let bucket = ResourceBuilder::new_fungible(OwnerRole::None)
                 .divisibility(DIVISIBILITY_NONE)
                 .restrict_withdraw(rule!(allow_all), rule!(deny_all))
                 .mint_initial_supply(Decimal::from(5));
@@ -41,7 +41,7 @@ mod invalid_stored_bucket_in_owned_component {
             }
             .instantiate();
             component.put_bucket(bucket);
-            component.globalize()
+            component.prepare_to_globalize(OwnerRole::None).globalize()
         }
     }
 }

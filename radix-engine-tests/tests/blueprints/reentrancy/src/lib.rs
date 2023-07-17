@@ -7,8 +7,11 @@ mod reentrant_component {
     struct ReentrantComponent {}
 
     impl ReentrantComponent {
-        pub fn new() -> ComponentAddress {
-            Self {}.instantiate().globalize()
+        pub fn new() -> Global<ReentrantComponent> {
+            Self {}
+                .instantiate()
+                .prepare_to_globalize(OwnerRole::None)
+                .globalize()
         }
 
         pub fn func(&self) {}
@@ -17,31 +20,19 @@ mod reentrant_component {
 
         pub fn call_mut_self(&mut self, address: ComponentAddress) {
             ScryptoEnv
-                .call_method(
-                    RENodeId::GlobalObject(address.into()),
-                    "mut_func",
-                    scrypto_args!(),
-                )
+                .call_method(&address.into(), "mut_func", scrypto_args!())
                 .unwrap();
         }
 
         pub fn call_self(&self, address: ComponentAddress) {
             ScryptoEnv
-                .call_method(
-                    RENodeId::GlobalObject(address.into()),
-                    "func",
-                    scrypto_args!(),
-                )
+                .call_method(&address.into(), "func", scrypto_args!())
                 .unwrap();
         }
 
         pub fn call_mut_self_2(&self, address: ComponentAddress) {
             ScryptoEnv
-                .call_method(
-                    RENodeId::GlobalObject(address.into()),
-                    "mut_func",
-                    scrypto_args!(),
-                )
+                .call_method(&address.into(), "mut_func", scrypto_args!())
                 .unwrap();
         }
     }

@@ -1,5 +1,5 @@
-use radix_engine::errors::{ModuleError, RuntimeError};
-use radix_engine::system::kernel_modules::costing::CostingError;
+use radix_engine::errors::{RuntimeError, SystemModuleError};
+use radix_engine::system::system_modules::limits::TransactionLimitsError;
 use radix_engine::types::*;
 use radix_engine_interface::blueprints::resource::FromPublicKey;
 use scrypto_unit::*;
@@ -13,7 +13,7 @@ fn local_component_should_return_correct_info() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(
             package_address,
             "Secret",
@@ -35,7 +35,7 @@ fn local_component_should_be_callable_read_only() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(
             package_address,
             "Secret",
@@ -57,7 +57,7 @@ fn local_component_should_be_callable_with_write() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(
             package_address,
             "Secret",
@@ -81,9 +81,9 @@ fn recursion_bomb() {
     // Act
     // Note: currently SEGFAULT occurs if bucket with too much in it is sent. My guess the issue is a native stack overflow.
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10u32.into())
-        .withdraw_from_account(account, RADIX_TOKEN, Decimal::from(5u32))
-        .take_from_worktop(RADIX_TOKEN, |builder, bucket_id| {
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
+        .withdraw_from_account(account, RADIX_TOKEN, Decimal::from(4u32))
+        .take_all_from_worktop(RADIX_TOKEN, |builder, bucket_id| {
             builder.call_function(
                 package_address,
                 "LocalRecursionBomb",
@@ -93,7 +93,7 @@ fn recursion_bomb() {
         })
         .call_method(
             account,
-            "deposit_batch",
+            "try_deposit_batch_or_abort",
             manifest_args!(ManifestExpression::EntireWorktop),
         )
         .build();
@@ -115,9 +115,9 @@ fn recursion_bomb_to_failure() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10u32.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .withdraw_from_account(account, RADIX_TOKEN, Decimal::from(100u32))
-        .take_from_worktop(RADIX_TOKEN, |builder, bucket_id| {
+        .take_all_from_worktop(RADIX_TOKEN, |builder, bucket_id| {
             builder.call_function(
                 package_address,
                 "LocalRecursionBomb",
@@ -127,7 +127,7 @@ fn recursion_bomb_to_failure() {
         })
         .call_method(
             account,
-            "deposit_batch",
+            "try_deposit_batch_or_abort",
             manifest_args!(ManifestExpression::EntireWorktop),
         )
         .build();
@@ -140,8 +140,8 @@ fn recursion_bomb_to_failure() {
     receipt.expect_specific_failure(|e| {
         matches!(
             e,
-            RuntimeError::ModuleError(ModuleError::CostingError(
-                CostingError::MaxCallDepthLimitReached
+            RuntimeError::SystemModuleError(SystemModuleError::TransactionLimitsError(
+                TransactionLimitsError::MaxCallDepthLimitReached
             ))
         )
     });
@@ -157,9 +157,9 @@ fn recursion_bomb_2() {
     // Act
     // Note: currently SEGFAULT occurs if bucket with too much in it is sent. My guess the issue is a native stack overflow.
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10u32.into())
-        .withdraw_from_account(account, RADIX_TOKEN, Decimal::from(5u32))
-        .take_from_worktop(RADIX_TOKEN, |builder, bucket_id| {
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
+        .withdraw_from_account(account, RADIX_TOKEN, Decimal::from(4u32))
+        .take_all_from_worktop(RADIX_TOKEN, |builder, bucket_id| {
             builder.call_function(
                 package_address,
                 "LocalRecursionBomb2",
@@ -169,7 +169,7 @@ fn recursion_bomb_2() {
         })
         .call_method(
             account,
-            "deposit_batch",
+            "try_deposit_batch_or_abort",
             manifest_args!(ManifestExpression::EntireWorktop),
         )
         .build();
@@ -191,9 +191,9 @@ fn recursion_bomb_2_to_failure() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10u32.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .withdraw_from_account(account, RADIX_TOKEN, Decimal::from(100u32))
-        .take_from_worktop(RADIX_TOKEN, |builder, bucket_id| {
+        .take_all_from_worktop(RADIX_TOKEN, |builder, bucket_id| {
             builder.call_function(
                 package_address,
                 "LocalRecursionBomb2",
@@ -203,7 +203,7 @@ fn recursion_bomb_2_to_failure() {
         })
         .call_method(
             account,
-            "deposit_batch",
+            "try_deposit_batch_or_abort",
             manifest_args!(ManifestExpression::EntireWorktop),
         )
         .build();
@@ -216,8 +216,8 @@ fn recursion_bomb_2_to_failure() {
     receipt.expect_specific_failure(|e| {
         matches!(
             e,
-            RuntimeError::ModuleError(ModuleError::CostingError(
-                CostingError::MaxCallDepthLimitReached
+            RuntimeError::SystemModuleError(SystemModuleError::TransactionLimitsError(
+                TransactionLimitsError::MaxCallDepthLimitReached
             ))
         )
     });

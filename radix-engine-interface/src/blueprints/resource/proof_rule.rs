@@ -1,163 +1,77 @@
 use crate::blueprints::resource::AccessRuleNode::{AllOf, AnyOf};
 use crate::blueprints::resource::*;
-use crate::data::scrypto::model::*;
-use crate::data::scrypto::SchemaPath;
 use crate::math::Decimal;
 use crate::*;
+#[cfg(feature = "radix_engine_fuzzing")]
+use arbitrary::Arbitrary;
+use radix_engine_common::types::*;
 use sbor::rust::vec;
 use sbor::rust::vec::Vec;
 
+#[cfg_attr(feature = "radix_engine_fuzzing", derive(Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, ScryptoSbor, ManifestSbor)]
-pub enum SoftDecimal {
-    Static(Decimal),
-    Dynamic(SchemaPath),
+pub enum ResourceOrNonFungible {
+    NonFungible(NonFungibleGlobalId),
+    Resource(ResourceAddress),
 }
 
-impl From<Decimal> for SoftDecimal {
-    fn from(amount: Decimal) -> Self {
-        SoftDecimal::Static(amount)
-    }
-}
-
-impl From<SchemaPath> for SoftDecimal {
-    fn from(path: SchemaPath) -> Self {
-        SoftDecimal::Dynamic(path)
-    }
-}
-
-impl From<&str> for SoftDecimal {
-    fn from(path: &str) -> Self {
-        let schema_path: SchemaPath = path.parse().expect("Could not decode path");
-        SoftDecimal::Dynamic(schema_path)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, ScryptoSbor, ManifestSbor)]
-pub enum SoftCount {
-    Static(u8),
-    Dynamic(SchemaPath),
-}
-
-impl From<u8> for SoftCount {
-    fn from(count: u8) -> Self {
-        SoftCount::Static(count)
-    }
-}
-
-impl From<SchemaPath> for SoftCount {
-    fn from(path: SchemaPath) -> Self {
-        SoftCount::Dynamic(path)
-    }
-}
-
-impl From<&str> for SoftCount {
-    fn from(path: &str) -> Self {
-        let schema_path: SchemaPath = path.parse().expect("Could not decode path");
-        SoftCount::Dynamic(schema_path)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, ScryptoSbor, ManifestSbor)]
-pub enum SoftResource {
-    Static(ResourceAddress),
-    Dynamic(SchemaPath),
-}
-
-impl From<ResourceAddress> for SoftResource {
-    fn from(resource_address: ResourceAddress) -> Self {
-        SoftResource::Static(resource_address)
-    }
-}
-
-impl From<SchemaPath> for SoftResource {
-    fn from(path: SchemaPath) -> Self {
-        SoftResource::Dynamic(path)
-    }
-}
-
-impl From<&str> for SoftResource {
-    fn from(path: &str) -> Self {
-        let schema_path: SchemaPath = path.parse().expect("Could not decode path");
-        SoftResource::Dynamic(schema_path)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, ScryptoSbor, ManifestSbor)]
-pub enum SoftResourceOrNonFungible {
-    StaticNonFungible(NonFungibleGlobalId),
-    StaticResource(ResourceAddress),
-    Dynamic(SchemaPath),
-}
-
-impl From<NonFungibleGlobalId> for SoftResourceOrNonFungible {
+impl From<NonFungibleGlobalId> for ResourceOrNonFungible {
     fn from(non_fungible_global_id: NonFungibleGlobalId) -> Self {
-        SoftResourceOrNonFungible::StaticNonFungible(non_fungible_global_id)
+        ResourceOrNonFungible::NonFungible(non_fungible_global_id)
     }
 }
 
-impl From<ResourceAddress> for SoftResourceOrNonFungible {
+impl From<ResourceAddress> for ResourceOrNonFungible {
     fn from(resource_address: ResourceAddress) -> Self {
-        SoftResourceOrNonFungible::StaticResource(resource_address)
+        ResourceOrNonFungible::Resource(resource_address)
     }
 }
 
-impl From<SchemaPath> for SoftResourceOrNonFungible {
-    fn from(path: SchemaPath) -> Self {
-        SoftResourceOrNonFungible::Dynamic(path)
-    }
+pub struct ResourceOrNonFungibleList {
+    list: Vec<ResourceOrNonFungible>,
 }
 
-impl From<&str> for SoftResourceOrNonFungible {
-    fn from(path: &str) -> Self {
-        let schema_path: SchemaPath = path.parse().expect("Could not decode path");
-        SoftResourceOrNonFungible::Dynamic(schema_path)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, ScryptoSbor, ManifestSbor)]
-pub enum SoftResourceOrNonFungibleList {
-    Static(Vec<SoftResourceOrNonFungible>),
-    Dynamic(SchemaPath),
-}
-
-impl From<SchemaPath> for SoftResourceOrNonFungibleList {
-    fn from(path: SchemaPath) -> Self {
-        SoftResourceOrNonFungibleList::Dynamic(path)
-    }
-}
-
-impl From<&str> for SoftResourceOrNonFungibleList {
-    fn from(path: &str) -> Self {
-        let schema_path: SchemaPath = path.parse().expect("Could not decode path");
-        SoftResourceOrNonFungibleList::Dynamic(schema_path)
-    }
-}
-
-impl<T> From<Vec<T>> for SoftResourceOrNonFungibleList
+impl<T> From<Vec<T>> for ResourceOrNonFungibleList
 where
-    T: Into<SoftResourceOrNonFungible>,
+    T: Into<ResourceOrNonFungible>,
 {
     fn from(addresses: Vec<T>) -> Self {
-        SoftResourceOrNonFungibleList::Static(addresses.into_iter().map(|a| a.into()).collect())
+        ResourceOrNonFungibleList {
+            list: addresses.into_iter().map(|a| a.into()).collect(),
+        }
     }
 }
 
 /// Resource Proof Rules
+#[cfg_attr(feature = "radix_engine_fuzzing", derive(Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, ScryptoSbor, ManifestSbor)]
 pub enum ProofRule {
-    Require(SoftResourceOrNonFungible),
-    AmountOf(SoftDecimal, SoftResource),
-    CountOf(SoftCount, SoftResourceOrNonFungibleList),
-    AllOf(SoftResourceOrNonFungibleList),
-    AnyOf(SoftResourceOrNonFungibleList),
+    Require(ResourceOrNonFungible),
+    AmountOf(Decimal, ResourceAddress),
+    CountOf(u8, Vec<ResourceOrNonFungible>),
+    AllOf(Vec<ResourceOrNonFungible>),
+    AnyOf(Vec<ResourceOrNonFungible>),
 }
 
-impl From<ResourceAddress> for ProofRule {
+impl From<ResourceAddress> for AccessRuleNode {
     fn from(resource_address: ResourceAddress) -> Self {
-        ProofRule::Require(resource_address.into())
+        AccessRuleNode::ProofRule(ProofRule::Require(resource_address.into()))
     }
 }
 
+impl From<NonFungibleGlobalId> for AccessRuleNode {
+    fn from(id: NonFungibleGlobalId) -> Self {
+        AccessRuleNode::ProofRule(ProofRule::Require(id.into()))
+    }
+}
+
+impl From<ResourceOrNonFungible> for AccessRuleNode {
+    fn from(resource_or_non_fungible: ResourceOrNonFungible) -> Self {
+        AccessRuleNode::ProofRule(ProofRule::Require(resource_or_non_fungible))
+    }
+}
+
+#[cfg_attr(feature = "radix_engine_fuzzing", derive(Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, ScryptoSbor, ManifestSbor)]
 pub enum AccessRuleNode {
     ProofRule(ProofRule),
@@ -187,46 +101,68 @@ impl AccessRuleNode {
     }
 }
 
-pub fn require<T>(resource: T) -> ProofRule
-where
-    T: Into<SoftResourceOrNonFungible>,
-{
-    ProofRule::Require(resource.into())
+/// A requirement for the immediate caller's package to equal the given package.
+pub fn package_of_direct_caller(package: PackageAddress) -> ResourceOrNonFungible {
+    ResourceOrNonFungible::NonFungible(NonFungibleGlobalId::package_of_direct_caller_badge(package))
 }
 
-pub fn require_any_of<T>(resources: T) -> ProofRule
-where
-    T: Into<SoftResourceOrNonFungibleList>,
-{
-    ProofRule::AnyOf(resources.into())
+/// A requirement for the global ancestor of the actor who made the latest global call to either be:
+/// * The main module of the given global component (pass a `ComponentAddress` or `GlobalAddress`)
+/// * A package function on the given blueprint (pass `(PackageAddress, String)` or `Blueprint`)
+pub fn global_caller(global_caller: impl Into<GlobalCaller>) -> ResourceOrNonFungible {
+    ResourceOrNonFungible::NonFungible(NonFungibleGlobalId::global_caller_badge(global_caller))
 }
 
-pub fn require_all_of<T>(resources: T) -> ProofRule
+pub fn require<T>(required: T) -> AccessRuleNode
 where
-    T: Into<SoftResourceOrNonFungibleList>,
+    T: Into<AccessRuleNode>,
 {
-    ProofRule::AllOf(resources.into())
+    required.into()
 }
 
-pub fn require_n_of<C, T>(count: C, resources: T) -> ProofRule
+pub fn require_any_of<T>(resources: T) -> AccessRuleNode
 where
-    C: Into<SoftCount>,
-    T: Into<SoftResourceOrNonFungibleList>,
+    T: Into<ResourceOrNonFungibleList>,
 {
-    ProofRule::CountOf(count.into(), resources.into())
+    let list: ResourceOrNonFungibleList = resources.into();
+    AccessRuleNode::ProofRule(ProofRule::AnyOf(list.list))
 }
 
-pub fn require_amount<D, T>(amount: D, resource: T) -> ProofRule
+pub fn require_all_of<T>(resources: T) -> AccessRuleNode
 where
-    D: Into<SoftDecimal>,
-    T: Into<SoftResource>,
+    T: Into<ResourceOrNonFungibleList>,
 {
-    ProofRule::AmountOf(amount.into(), resource.into())
+    let list: ResourceOrNonFungibleList = resources.into();
+    AccessRuleNode::ProofRule(ProofRule::AllOf(list.list))
 }
 
+pub fn require_n_of<C, T>(count: C, resources: T) -> AccessRuleNode
+where
+    C: Into<u8>,
+    T: Into<ResourceOrNonFungibleList>,
+{
+    let list: ResourceOrNonFungibleList = resources.into();
+    AccessRuleNode::ProofRule(ProofRule::CountOf(count.into(), list.list))
+}
+
+pub fn require_amount<D, T>(amount: D, resource: T) -> AccessRuleNode
+where
+    D: Into<Decimal>,
+    T: Into<ResourceAddress>,
+{
+    AccessRuleNode::ProofRule(ProofRule::AmountOf(amount.into(), resource.into()))
+}
+
+#[cfg_attr(feature = "radix_engine_fuzzing", derive(Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, ScryptoSbor, ManifestSbor)]
 pub enum AccessRule {
     AllowAll,
     DenyAll,
     Protected(AccessRuleNode),
+}
+
+impl From<AccessRuleNode> for AccessRule {
+    fn from(value: AccessRuleNode) -> Self {
+        AccessRule::Protected(value)
+    }
 }

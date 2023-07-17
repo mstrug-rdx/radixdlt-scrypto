@@ -1,7 +1,9 @@
 use clap::Parser;
+use radix_engine::utils::validate_call_arguments_to_native_components;
 use regex::{Captures, Regex};
 use std::env;
 use std::path::PathBuf;
+use transaction::manifest::BlobProvider;
 
 use crate::resim::*;
 
@@ -50,9 +52,16 @@ impl Run {
                 blobs.push(std::fs::read(path).map_err(Error::IOError)?);
             }
         }
-        let compiled_manifest =
-            transaction::manifest::compile(&pre_processed_manifest, &network, blobs)
-                .map_err(Error::CompileError)?;
+        let compiled_manifest = transaction::manifest::compile(
+            &pre_processed_manifest,
+            &network,
+            BlobProvider::new_with_blobs(blobs),
+        )
+        .map_err(Error::CompileError)?;
+
+        validate_call_arguments_to_native_components(&compiled_manifest.instructions)
+            .map_err(Error::InstructionSchemaValidationError)?;
+
         handle_manifest(
             compiled_manifest,
             &self.signing_keys,
@@ -84,8 +93,8 @@ mod tests {
                 ),
             ],
             || {
-                let manifest = r#"CALL_METHOD ComponentAddress("${  faucet  }") "free";\nTAKE_FROM_WORKTOP ResourceAddress("${xrd}") Bucket("bucket1");\n"#;
-                let after = r#"CALL_METHOD ComponentAddress("system_sim1qsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpql4sktx") "free";\nTAKE_FROM_WORKTOP ResourceAddress("resource_sim1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzqu57yag") Bucket("bucket1");\n"#;
+                let manifest = r#"CALL_METHOD ComponentAddress("${  faucet  }") "free";\nTAKE_ALL_FROM_WORKTOP ResourceAddress("${xrd}") Bucket("bucket1");\n"#;
+                let after = r#"CALL_METHOD ComponentAddress("system_sim1qsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpql4sktx") "free";\nTAKE_ALL_FROM_WORKTOP ResourceAddress("resource_sim1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzqu57yag") Bucket("bucket1");\n"#;
                 assert_eq!(Run::pre_process_manifest(manifest), after);
             },
         );

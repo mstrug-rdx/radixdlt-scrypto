@@ -1,6 +1,7 @@
+use radix_engine::errors::{ApplicationError, RuntimeError};
+use radix_engine::system::node_modules::royalty::ComponentRoyaltyError;
 use radix_engine::types::*;
 use radix_engine_interface::api::node_modules::auth::AuthAddresses;
-use radix_engine_interface::blueprints::resource::*;
 use radix_engine_interface::rule;
 use scrypto_unit::*;
 use transaction::builder::ManifestBuilder;
@@ -12,16 +13,16 @@ fn test_auth_rule(
     should_succeed: bool,
 ) {
     // Arrange
-    let account = test_runner.new_account_with_auth_rule(auth_rule.clone());
+    let account = test_runner.new_account_advanced(OwnerRole::Fixed(auth_rule.clone()));
     let (_, _, other_account) = test_runner.new_allocated_account();
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .withdraw_from_account(account, RADIX_TOKEN, 1.into())
         .call_method(
             other_account,
-            "deposit_batch",
+            "try_deposit_batch_or_abort",
             manifest_args!(ManifestExpression::EntireWorktop),
         )
         .build();
@@ -220,14 +221,14 @@ fn can_withdraw_from_my_any_xrd_auth_account_with_no_signature() {
     // Arrange
     let mut test_runner = TestRunner::builder().build();
     let xrd_auth = rule!(require(RADIX_TOKEN));
-    let account = test_runner.new_account_with_auth_rule(xrd_auth);
+    let account = test_runner.new_account_advanced(OwnerRole::Fixed(xrd_auth));
     let (_, _, other_account) = test_runner.new_allocated_account();
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
-        .call_method(FAUCET_COMPONENT, "free", manifest_args!())
-        .take_from_worktop(RADIX_TOKEN, |builder, bucket_id| {
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
+        .call_method(test_runner.faucet_component(), "free", manifest_args!())
+        .take_all_from_worktop(RADIX_TOKEN, |builder, bucket_id| {
             builder.create_proof_from_bucket(&bucket_id, |builder, proof_id| {
                 builder.push_to_auth_zone(proof_id);
                 builder.withdraw_from_account(account, RADIX_TOKEN, 1.into());
@@ -239,7 +240,7 @@ fn can_withdraw_from_my_any_xrd_auth_account_with_no_signature() {
         })
         .call_method(
             other_account,
-            "deposit_batch",
+            "try_deposit_batch_or_abort",
             manifest_args!(ManifestExpression::EntireWorktop),
         )
         .build();
@@ -254,14 +255,14 @@ fn can_withdraw_from_my_any_xrd_auth_account_with_right_amount_of_proof() {
     // Arrange
     let mut test_runner = TestRunner::builder().build();
     let xrd_auth = rule!(require_amount(Decimal(BnumI256::from(1)), RADIX_TOKEN));
-    let account = test_runner.new_account_with_auth_rule(xrd_auth);
+    let account = test_runner.new_account_advanced(OwnerRole::Fixed(xrd_auth));
     let (_, _, other_account) = test_runner.new_allocated_account();
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
-        .call_method(FAUCET_COMPONENT, "free", manifest_args!())
-        .take_from_worktop(RADIX_TOKEN, |builder, bucket_id| {
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
+        .call_method(test_runner.faucet_component(), "free", manifest_args!())
+        .take_all_from_worktop(RADIX_TOKEN, |builder, bucket_id| {
             builder.create_proof_from_bucket(&bucket_id, |builder, proof_id| {
                 builder.push_to_auth_zone(proof_id);
                 builder.withdraw_from_account(account, RADIX_TOKEN, 1.into());
@@ -273,7 +274,7 @@ fn can_withdraw_from_my_any_xrd_auth_account_with_right_amount_of_proof() {
         })
         .call_method(
             other_account,
-            "deposit_batch",
+            "try_deposit_batch_or_abort",
             manifest_args!(ManifestExpression::EntireWorktop),
         )
         .build();
@@ -287,15 +288,15 @@ fn can_withdraw_from_my_any_xrd_auth_account_with_right_amount_of_proof() {
 fn cannot_withdraw_from_my_any_xrd_auth_account_with_less_than_amount_of_proof() {
     // Arrange
     let mut test_runner = TestRunner::builder().build();
-    let xrd_auth = rule!(require_amount(Decimal::from(1), RADIX_TOKEN));
-    let account = test_runner.new_account_with_auth_rule(xrd_auth);
+    let xrd_auth = rule!(require_amount(Decimal::from(2), RADIX_TOKEN));
+    let account = test_runner.new_account_advanced(OwnerRole::Fixed(xrd_auth));
     let (_, _, other_account) = test_runner.new_allocated_account();
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
-        .call_method(FAUCET_COMPONENT, "free", manifest_args!())
-        .take_from_worktop_by_amount(dec!("0.9"), RADIX_TOKEN, |builder, bucket_id| {
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
+        .call_method(test_runner.faucet_component(), "free", manifest_args!())
+        .take_from_worktop(RADIX_TOKEN, dec!("1"), |builder, bucket_id| {
             builder.create_proof_from_bucket(&bucket_id, |builder, proof_id| {
                 builder.push_to_auth_zone(proof_id);
                 builder.withdraw_from_account(account, RADIX_TOKEN, 1.into());
@@ -307,7 +308,7 @@ fn cannot_withdraw_from_my_any_xrd_auth_account_with_less_than_amount_of_proof()
         })
         .call_method(
             other_account,
-            "deposit_batch",
+            "try_deposit_batch_or_abort",
             manifest_args!(ManifestExpression::EntireWorktop),
         )
         .build();
@@ -315,4 +316,60 @@ fn cannot_withdraw_from_my_any_xrd_auth_account_with_less_than_amount_of_proof()
 
     // Assert
     receipt.expect_specific_failure(is_auth_error)
+}
+
+#[test]
+fn can_update_updatable_owner_role_account() {
+    // Arrange
+    let mut test_runner = TestRunner::builder().build();
+    let xrd_auth = rule!(require_amount(Decimal(BnumI256::from(1)), RADIX_TOKEN));
+    let account = test_runner.new_account_advanced(OwnerRole::Updatable(xrd_auth));
+
+    // Act
+    let manifest = ManifestBuilder::new()
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
+        .call_method(test_runner.faucet_component(), "free", manifest_args!())
+        .take_all_from_worktop(RADIX_TOKEN, |builder, bucket_id| {
+            builder.create_proof_from_bucket(&bucket_id, |builder, proof_id| {
+                builder.push_to_auth_zone(proof_id);
+                builder.set_owner_role(account.into(), AccessRule::DenyAll);
+                builder.pop_from_auth_zone(|builder, proof_id| builder.drop_proof(proof_id));
+                builder
+            });
+            builder.return_to_worktop(bucket_id);
+            builder
+        })
+        .call_method(
+            account,
+            "try_deposit_batch_or_abort",
+            manifest_args!(ManifestExpression::EntireWorktop),
+        )
+        .build();
+    let receipt = test_runner.execute_manifest(manifest, vec![]);
+
+    // Assert
+    receipt.expect_commit_success();
+}
+
+#[test]
+fn cannot_set_royalty_on_accounts() {
+    // Arrange
+    let mut test_runner = TestRunner::builder().build();
+    let account = test_runner.new_account_advanced(OwnerRole::Updatable(AccessRule::AllowAll));
+
+    let manifest = ManifestBuilder::new()
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
+        .set_component_royalty(account, "deposit", RoyaltyAmount::Free)
+        .build();
+    let receipt = test_runner.execute_manifest(manifest, vec![]);
+
+    // Assert
+    receipt.expect_specific_failure(|e| {
+        matches!(
+            e,
+            RuntimeError::ApplicationError(ApplicationError::ComponentRoyaltyError(
+                ComponentRoyaltyError::ComponentRoyaltyIsDisabled
+            ))
+        )
+    });
 }

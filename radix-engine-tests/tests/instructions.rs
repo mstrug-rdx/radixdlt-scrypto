@@ -1,5 +1,7 @@
+use radix_engine::errors::SystemModuleError;
+use radix_engine::system::system_modules::auth::AuthError;
 use radix_engine::{
-    blueprints::{auth_zone::AuthZoneError, transaction_processor::TransactionProcessorError},
+    blueprints::transaction_processor::TransactionProcessorError,
     errors::{ApplicationError, RuntimeError},
     types::*,
 };
@@ -16,8 +18,8 @@ fn clear_auth_zone_should_not_drop_named_proofs() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(account, dec!(10))
-        .create_proof_from_account_by_amount(account, RADIX_TOKEN, dec!(5))
+        .lock_fee(account, 500u32.into())
+        .create_proof_from_account_of_amount(account, RADIX_TOKEN, dec!(5))
         .create_proof_from_auth_zone(RADIX_TOKEN, |builder, proof_id| {
             builder.clear_auth_zone().drop_proof(proof_id) // Proof should continue to work after CLEAR_AUTH_ZONE
         })
@@ -43,8 +45,8 @@ fn drop_all_proofs_should_drop_named_proofs() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(account, dec!(10))
-        .create_proof_from_account_by_amount(account, RADIX_TOKEN, dec!(5))
+        .lock_fee(account, 500u32.into())
+        .create_proof_from_account_of_amount(account, RADIX_TOKEN, dec!(5))
         .create_proof_from_auth_zone(RADIX_TOKEN, |builder, proof_id| {
             builder.drop_all_proofs().drop_proof(proof_id) // Proof should continue to work after CLEAR_AUTH_ZONE
         })
@@ -70,15 +72,15 @@ fn clear_signature_proofs_should_invalid_public_key_proof() {
     // Arrange
     let mut test_runner = TestRunner::builder().build();
     let (public_key, _, account) = test_runner.new_allocated_account();
+    let rule = rule!(require(NonFungibleGlobalId::from_public_key(&public_key)));
+    let other_account = test_runner.new_account_advanced(OwnerRole::Updatable(rule));
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(account, dec!(10))
-        .create_proof_from_account_by_amount(account, RADIX_TOKEN, dec!(5))
+        .lock_fee(account, 500u32.into())
+        .create_proof_from_account_of_amount(account, RADIX_TOKEN, dec!(5))
         .clear_signature_proofs()
-        .assert_access_rule(rule!(require(NonFungibleGlobalId::from_public_key(
-            &public_key
-        ))))
+        .create_proof_from_account_of_amount(other_account, RADIX_TOKEN, dec!(1))
         .build();
     let receipt = test_runner.execute_manifest(
         manifest,
@@ -89,9 +91,9 @@ fn clear_signature_proofs_should_invalid_public_key_proof() {
     receipt.expect_specific_failure(|e| {
         matches!(
             e,
-            RuntimeError::ApplicationError(ApplicationError::AuthZoneError(
-                AuthZoneError::AssertAccessRuleFailed
-            ))
+            RuntimeError::SystemModuleError(SystemModuleError::AuthError(AuthError::Unauthorized(
+                ..
+            )))
         )
     })
 }
@@ -101,13 +103,15 @@ fn clear_signature_proofs_should_not_invalid_physical_proof() {
     // Arrange
     let mut test_runner = TestRunner::builder().build();
     let (public_key, _, account) = test_runner.new_allocated_account();
+    let rule = rule!(require_amount(dec!(5), RADIX_TOKEN));
+    let other_account = test_runner.new_account_advanced(OwnerRole::Updatable(rule));
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(account, dec!(10))
-        .create_proof_from_account_by_amount(account, RADIX_TOKEN, dec!(5))
+        .lock_fee(account, 500u32.into())
+        .create_proof_from_account_of_amount(account, RADIX_TOKEN, dec!(5))
         .clear_signature_proofs()
-        .assert_access_rule(rule!(require_amount(dec!(5), RADIX_TOKEN)))
+        .create_proof_from_account_of_amount(other_account, RADIX_TOKEN, dec!(1))
         .build();
     let receipt = test_runner.execute_manifest(
         manifest,

@@ -10,7 +10,7 @@ mod super_key_value_store {
     }
 
     impl SuperKeyValueStore {
-        pub fn new() -> ComponentAddress {
+        pub fn new() -> Global<SuperKeyValueStore> {
             let map0 = KeyValueStore::new();
             let map1 = KeyValueStore::new();
             let map2 = KeyValueStore::new();
@@ -26,7 +26,10 @@ mod super_key_value_store {
                 map3.insert(4u32, map4);
             }
 
-            SuperKeyValueStore { maps: map0 }.instantiate().globalize()
+            SuperKeyValueStore { maps: map0 }
+                .instantiate()
+                .prepare_to_globalize(OwnerRole::None)
+                .globalize()
         }
     }
 }

@@ -1,3 +1,3 @@
-mod package;
+mod object;
 
-pub use package::*;
+pub use object::*;

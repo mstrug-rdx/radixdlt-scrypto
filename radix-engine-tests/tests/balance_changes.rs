@@ -1,3 +1,4 @@
+use radix_engine::transaction::CommitResult;
 use radix_engine::{transaction::BalanceChange, types::*};
 use radix_engine_interface::blueprints::resource::FromPublicKey;
 use scrypto_unit::*;
@@ -21,16 +22,7 @@ fn test_balance_changes_when_success() {
     // Instantiate component
     let receipt = test_runner.execute_manifest(
         ManifestBuilder::new()
-            .lock_fee(account, 10u32.into())
-            .set_package_royalty_config(
-                package_address,
-                btreemap!(
-                    "BalanceChangesTest".to_owned() => RoyaltyConfigBuilder::new()
-                        .add_rule("put", 2)
-                        .add_rule("boom", 2)
-                        .default(0)
-                ),
-            )
+            .lock_fee(account, 500u32.into())
             .call_function(
                 package_address,
                 "BalanceChangesTest",
@@ -48,9 +40,9 @@ fn test_balance_changes_when_success() {
     // Call the put method
     let receipt = test_runner.execute_manifest(
         ManifestBuilder::new()
-            .lock_fee(FAUCET_COMPONENT, 100.into())
+            .lock_fee(test_runner.faucet_component(), 500u32.into())
             .withdraw_from_account(account, RADIX_TOKEN, Decimal::ONE)
-            .take_from_worktop(RADIX_TOKEN, |builder, bucket| {
+            .take_all_from_worktop(RADIX_TOKEN, |builder, bucket| {
                 builder.call_method(component_address, "put", manifest_args!(bucket))
             })
             .build(),
@@ -58,20 +50,25 @@ fn test_balance_changes_when_success() {
     );
 
     let result = receipt.expect_commit(true);
+
+    assert_eq!(result.balance_changes().len(), 5usize);
     assert_eq!(
         result.balance_changes(),
         &indexmap!(
-            FAUCET_COMPONENT.into() => indexmap!(
-                RADIX_TOKEN => BalanceChange::Fungible(-(result.fee_summary.total_execution_cost_xrd + result.fee_summary.total_royalty_cost_xrd))
-            ),
-            package_address.into() => indexmap!(
-                RADIX_TOKEN => BalanceChange::Fungible(dec!("0.0000002"))
-            ),
-            component_address.into() => indexmap!(
-                RADIX_TOKEN => BalanceChange::Fungible(dec!("1.0000001"))
+            test_runner.faucet_component().into() => indexmap!(
+                RADIX_TOKEN => BalanceChange::Fungible(-(result.fee_summary.total_cost()))
             ),
             account.into() => indexmap!(
                 RADIX_TOKEN => BalanceChange::Fungible(dec!("-1"))
+            ),
+            component_address.into() => indexmap!(
+                RADIX_TOKEN => BalanceChange::Fungible(dec!("2")) // 1 for put another 1 for component royalties
+            ),
+            package_address.into() => indexmap!(
+                RADIX_TOKEN => BalanceChange::Fungible(dec!("2"))
+            ),
+            CONSENSUS_MANAGER.into() => indexmap!(
+                RADIX_TOKEN => BalanceChange::Fungible(result.fee_summary.expected_reward_if_single_validator())
             )
         )
     );
@@ -96,16 +93,7 @@ fn test_balance_changes_when_failure() {
     // Instantiate component
     let receipt = test_runner.execute_manifest(
         ManifestBuilder::new()
-            .lock_fee(account, 10u32.into())
-            .set_package_royalty_config(
-                package_address,
-                btreemap!(
-                    "BalanceChangesTest".to_owned() => RoyaltyConfigBuilder::new()
-                        .add_rule("put", 2)
-                        .add_rule("boom", 2)
-                        .default(0)
-                ),
-            )
+            .lock_fee(account, 500u32.into())
             .call_function(
                 package_address,
                 "BalanceChangesTest",
@@ -123,23 +111,25 @@ fn test_balance_changes_when_failure() {
     // Call the put method
     let receipt = test_runner.execute_manifest(
         ManifestBuilder::new()
-            .lock_fee(FAUCET_COMPONENT, 100.into())
+            .lock_fee(test_runner.faucet_component(), 500u32.into())
             .withdraw_from_account(account, RADIX_TOKEN, Decimal::ONE)
-            .take_from_worktop(RADIX_TOKEN, |builder, bucket| {
+            .take_all_from_worktop(RADIX_TOKEN, |builder, bucket| {
                 builder.call_method(component_address, "boom", manifest_args!(bucket))
             })
             .build(),
         vec![NonFungibleGlobalId::from_public_key(&public_key)],
     );
 
-    let vault_id = test_runner.get_component_vaults(FAUCET_COMPONENT, RADIX_TOKEN)[0];
     let result = receipt.expect_commit(false);
-    assert!(result.balance_changes().is_empty());
+    assert!(result.direct_vault_updates().is_empty());
     assert_eq!(
-        result.direct_vault_updates(),
+        result.balance_changes(),
         &indexmap!(
-            vault_id => indexmap!(
-                RADIX_TOKEN => BalanceChange::Fungible(-(result.fee_summary.total_execution_cost_xrd + result.fee_summary.total_royalty_cost_xrd))
+            test_runner.faucet_component().into() => indexmap!(
+                RADIX_TOKEN => BalanceChange::Fungible(-(result.fee_summary.total_cost()))
+            ),
+            CONSENSUS_MANAGER.into() => indexmap!(
+                RADIX_TOKEN => BalanceChange::Fungible(result.fee_summary.expected_reward_if_single_validator())
             )
         )
     )
@@ -158,11 +148,14 @@ fn test_balance_changes_when_recall() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10u32.into())
-        .recall(vault_id, Decimal::one())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
+        .recall(
+            InternalAddress::new_or_panic(vault_id.into()),
+            Decimal::one(),
+        )
         .call_method(
             other_account,
-            "deposit_batch",
+            "try_deposit_batch_or_abort",
             manifest_args!(ManifestExpression::EntireWorktop),
         )
         .build();
@@ -173,12 +166,15 @@ fn test_balance_changes_when_recall() {
     assert_eq!(
         result.balance_changes(),
         &indexmap!(
-            FAUCET_COMPONENT.into() => indexmap!(
-                RADIX_TOKEN => BalanceChange::Fungible(-(result.fee_summary.total_execution_cost_xrd + result.fee_summary.total_royalty_cost_xrd))
+            test_runner.faucet_component().into() => indexmap!(
+                RADIX_TOKEN => BalanceChange::Fungible(-(result.fee_summary.total_cost()))
             ),
             other_account.into() => indexmap!(
                 recallable_token => BalanceChange::Fungible(dec!("1"))
             ),
+            CONSENSUS_MANAGER.into() => indexmap!(
+                RADIX_TOKEN => BalanceChange::Fungible(result.fee_summary.expected_reward_if_single_validator())
+            )
         )
     );
     assert_eq!(
@@ -202,11 +198,11 @@ fn test_balance_changes_when_transferring_non_fungibles() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10u32.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .withdraw_from_account(account, resource_address, dec!("1.0"))
         .call_method(
             other_account,
-            "deposit_batch",
+            "try_deposit_batch_or_abort",
             manifest_args!(ManifestExpression::EntireWorktop),
         )
         .build();
@@ -215,25 +211,62 @@ fn test_balance_changes_when_transferring_non_fungibles() {
 
     // Assert
     let result = receipt.expect_commit(true);
+
     assert_eq!(
-        result.balance_changes(),
-        &indexmap!(
-            FAUCET_COMPONENT.into() => indexmap!(
-                RADIX_TOKEN => BalanceChange::Fungible(-(result.fee_summary.total_execution_cost_xrd + result.fee_summary.total_royalty_cost_xrd))
-            ),
-            account.into() => indexmap!(
-                resource_address => BalanceChange::NonFungible {
-                    added: BTreeSet::new(),
-                    removed: btreeset!(NonFungibleLocalId::integer(1))
-                }
-            ),
-            other_account.into() => indexmap!(
-                resource_address => BalanceChange::NonFungible {
-                    added: btreeset!(NonFungibleLocalId::integer(1)),
-                    removed: BTreeSet::new()
-                }
-            ),
-        )
+        result
+            .balance_changes()
+            .keys()
+            .cloned()
+            .collect::<HashSet<GlobalAddress>>(),
+        hashset![
+            account.into(),
+            other_account.into(),
+            test_runner.faucet_component().into(),
+            CONSENSUS_MANAGER.into(),
+        ]
     );
+
+    let (account_added, account_removed) =
+        get_non_fungible_changes(result, &account, &resource_address);
+    assert_eq!(account_added, BTreeSet::new());
+    assert_eq!(account_removed.len(), 1);
+    let transferred_non_fungible = account_removed.first().unwrap().clone();
+
+    let (other_account_added, other_account_removed) =
+        get_non_fungible_changes(result, &other_account, &resource_address);
+    assert_eq!(other_account_added, btreeset!(transferred_non_fungible));
+    assert_eq!(other_account_removed, BTreeSet::new());
+
+    let faucet_changes = result
+        .balance_changes()
+        .get(&GlobalAddress::from(test_runner.faucet_component()))
+        .unwrap();
+    let total_cost_xrd = result.fee_summary.total_cost();
+    assert_eq!(
+        faucet_changes,
+        &indexmap!(
+            RADIX_TOKEN => BalanceChange::Fungible(-total_cost_xrd),
+        ),
+    );
+
     assert!(result.direct_vault_updates().is_empty())
+}
+
+fn get_non_fungible_changes(
+    result: &CommitResult,
+    account: &ComponentAddress,
+    resource_address: &ResourceAddress,
+) -> (BTreeSet<NonFungibleLocalId>, BTreeSet<NonFungibleLocalId>) {
+    let balance_change = result
+        .balance_changes()
+        .get(&GlobalAddress::from(account.clone()))
+        .unwrap()
+        .get(resource_address)
+        .unwrap();
+    let account_changes = if let BalanceChange::NonFungible { added, removed } = balance_change {
+        Some((added.clone(), removed.clone()))
+    } else {
+        None
+    };
+    account_changes.unwrap()
 }

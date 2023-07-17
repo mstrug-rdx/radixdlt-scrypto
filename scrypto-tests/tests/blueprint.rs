@@ -12,13 +12,18 @@ mod empty {
 
 #[blueprint]
 mod simple {
+    use scrypto::prelude::OwnerRole;
+
     struct Simple {
         state: u32,
     }
 
     impl Simple {
-        pub fn new() -> ComponentAddress {
-            Self { state: 0 }.instantiate().globalize()
+        pub fn new() -> Global<Simple> {
+            Self { state: 0 }
+                .instantiate()
+                .prepare_to_globalize(OwnerRole::None)
+                .globalize()
         }
 
         pub fn get_state(&self) -> u32 {
@@ -38,14 +43,14 @@ mod simple {
             Proof,
             Vault,
         ) {
-            todo!()
+            unreachable!()
         }
     }
 }
 
 #[blueprint]
 mod empty_with_use_statements {
-    use radix_engine_common::data::scrypto::model::ComponentAddress;
+    use radix_engine_common::types::ComponentAddress;
 
     struct EmptyWithUse {}
 

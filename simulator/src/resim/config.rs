@@ -12,7 +12,7 @@ pub struct Configs {
     pub default_account: Option<ComponentAddress>,
     pub default_private_key: Option<String>,
     pub default_owner_badge: Option<NonFungibleGlobalId>,
-    pub nonce: u64,
+    pub nonce: u32,
 }
 
 pub fn get_data_dir() -> Result<PathBuf, Error> {
@@ -56,10 +56,10 @@ pub fn get_default_account() -> Result<ComponentAddress, Error> {
         .ok_or(Error::NoDefaultAccount)
 }
 
-pub fn get_default_private_key() -> Result<EcdsaSecp256k1PrivateKey, Error> {
+pub fn get_default_private_key() -> Result<Secp256k1PrivateKey, Error> {
     get_configs()?
         .default_private_key
-        .map(|v| EcdsaSecp256k1PrivateKey::from_bytes(&hex::decode(&v).unwrap()).unwrap())
+        .map(|v| Secp256k1PrivateKey::from_bytes(&hex::decode(&v).unwrap()).unwrap())
         .ok_or(Error::NoDefaultPrivateKey)
 }
 
@@ -69,6 +69,6 @@ pub fn get_default_owner_badge() -> Result<NonFungibleGlobalId, Error> {
         .ok_or(Error::NoDefaultOwnerBadge)
 }
 
-pub fn get_nonce() -> Result<u64, Error> {
+pub fn get_nonce() -> Result<u32, Error> {
     Ok(get_configs()?.nonce)
 }

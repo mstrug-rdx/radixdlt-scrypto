@@ -1,68 +1,69 @@
+use std::hint::black_box;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use radix_engine::types::*;
 use transaction::builder::ManifestBuilder;
 use transaction::builder::TransactionBuilder;
-use transaction::ecdsa_secp256k1::EcdsaSecp256k1PrivateKey;
-use transaction::eddsa_ed25519::EddsaEd25519PrivateKey;
-use transaction::model::TransactionHeader;
-use transaction::validation::verify_ecdsa_secp256k1;
-use transaction::validation::verify_eddsa_ed25519;
+use transaction::model::TransactionHeaderV1;
+use transaction::model::TransactionPayload;
+use transaction::signing::ed25519::Ed25519PrivateKey;
+use transaction::signing::secp256k1::Secp256k1PrivateKey;
+use transaction::validation::verify_ed25519;
+use transaction::validation::verify_secp256k1;
 use transaction::validation::NotarizedTransactionValidator;
-use transaction::validation::TestIntentHashManager;
 use transaction::validation::ValidationConfig;
-use transaction::validation::{recover_ecdsa_secp256k1, TransactionValidator};
+use transaction::validation::{recover_secp256k1, TransactionValidator};
 
-fn bench_ecdsa_secp256k1_validation(c: &mut Criterion) {
+fn bench_secp256k1_validation(c: &mut Criterion) {
     let message_hash = hash("This is a long message".repeat(100));
-    let signer = EcdsaSecp256k1PrivateKey::from_u64(123123123123).unwrap();
+    let signer = Secp256k1PrivateKey::from_u64(123123123123).unwrap();
     let signature = signer.sign(&message_hash);
 
     c.bench_function("Validation::verify_ecdsa", |b| {
         b.iter(|| {
-            let public_key = recover_ecdsa_secp256k1(&message_hash, &signature).unwrap();
-            verify_ecdsa_secp256k1(&message_hash, &public_key, &signature);
+            let public_key = recover_secp256k1(&message_hash, &signature).unwrap();
+            verify_secp256k1(&message_hash, &public_key, &signature);
         })
     });
 }
 
-fn bench_eddsa_ed25519_validation(c: &mut Criterion) {
+fn bench_ed25519_validation(c: &mut Criterion) {
     let message_hash = hash("This is a long message".repeat(100));
-    let signer = EddsaEd25519PrivateKey::from_u64(123123123123).unwrap();
+    let signer = Ed25519PrivateKey::from_u64(123123123123).unwrap();
     let public_key = signer.public_key();
     let signature = signer.sign(&message_hash);
 
     c.bench_function("Validation::verify_ed25519", |b| {
         b.iter(|| {
-            verify_eddsa_ed25519(&message_hash, &public_key, &signature);
+            verify_ed25519(&message_hash, &public_key, &signature);
         })
     });
 }
 
 fn bench_transaction_validation(c: &mut Criterion) {
-    let bech32_decoder: Bech32Decoder = Bech32Decoder::new(&NetworkDefinition::simulator());
+    let address_bech32_decoder: AddressBech32Decoder =
+        AddressBech32Decoder::new(&NetworkDefinition::simulator());
 
-    let account1 = bech32_decoder
-        .validate_and_decode_component_address(
-            "account_sim1pzmws3yehqas09l02g6420ht0md2pn4zg0q39rp0uums4cp5c0",
-        )
-        .unwrap();
-    let account2 = bech32_decoder
-        .validate_and_decode_component_address(
-            "account_sim1pqwe5ynx0dd7hnm5cpks962a8ra44ezdtlq0g95ee5qsu0vmhn",
-        )
-        .unwrap();
-    let signer = EcdsaSecp256k1PrivateKey::from_u64(1).unwrap();
+    let account1 = ComponentAddress::try_from_bech32(
+        &address_bech32_decoder,
+        "account_sim1cyvgx33089ukm2pl97pv4max0x40ruvfy4lt60yvya744cve475w0q",
+    )
+    .unwrap();
+    let account2 = ComponentAddress::try_from_bech32(
+        &address_bech32_decoder,
+        "account_sim1cyzfj6p254jy6lhr237s7pcp8qqz6c8ahq9mn6nkdjxxxat5syrgz9",
+    )
+    .unwrap();
+    let signer = Secp256k1PrivateKey::from_u64(1).unwrap();
 
     let transaction = TransactionBuilder::new()
-        .header(TransactionHeader {
-            version: 1,
+        .header(TransactionHeaderV1 {
             network_id: NetworkDefinition::simulator().id,
-            start_epoch_inclusive: 0,
-            end_epoch_exclusive: 100,
+            start_epoch_inclusive: Epoch::zero(),
+            end_epoch_exclusive: Epoch::of(100),
             nonce: 1,
             notary_public_key: signer.public_key().into(),
-            notary_as_signatory: true,
-            cost_unit_limit: 1_000_000,
+            notary_is_signatory: true,
             tip_percentage: 5,
         })
         .manifest(
@@ -70,36 +71,33 @@ fn bench_transaction_validation(c: &mut Criterion) {
                 .withdraw_from_account(account1, RADIX_TOKEN, 1u32.into())
                 .call_method(
                     account2,
-                    "deposit_batch",
+                    "try_deposit_batch_or_abort",
                     manifest_args!(ManifestExpression::EntireWorktop),
                 )
                 .build(),
         )
         .notarize(&signer)
         .build();
-    let transaction_bytes = transaction.to_bytes().unwrap();
+    let transaction_bytes = transaction.to_payload_bytes().unwrap();
     println!("Transaction size: {} bytes", transaction_bytes.len());
 
     let validator = NotarizedTransactionValidator::new(ValidationConfig::simulator());
 
     c.bench_function("Validation::validate_manifest", |b| {
         b.iter(|| {
-            let intent_hash_manager = TestIntentHashManager::new();
-
-            let transaction = validator
-                .check_length_and_decode_from_slice(&transaction_bytes)
-                .unwrap();
-            validator
-                .validate(&transaction, 0, &intent_hash_manager)
-                .unwrap();
+            black_box(
+                validator
+                    .validate_from_payload_bytes(&transaction_bytes)
+                    .unwrap(),
+            )
         })
     });
 }
 
 criterion_group!(
     validation,
-    bench_ecdsa_secp256k1_validation,
-    bench_eddsa_ed25519_validation,
+    bench_secp256k1_validation,
+    bench_ed25519_validation,
     bench_transaction_validation,
 );
 criterion_main!(validation);

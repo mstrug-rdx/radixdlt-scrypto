@@ -9,7 +9,7 @@ use radix_engine_interface::math::ParseDecimalError;
 #[derive(Debug)]
 pub enum ParseResourceSpecifierError {
     InvalidAmount(ParseDecimalError),
-    InvalidResourceAddress(AddressError),
+    InvalidResourceAddress(String),
     InvalidNonFungibleLocalId(ParseNonFungibleLocalIdError),
     MoreThanOneAmountSpecified,
 }
@@ -24,7 +24,7 @@ impl FromStr for ResourceSpecifier {
     type Err = ParseResourceSpecifierError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse_resource_specifier(s, &Bech32Decoder::for_simulator())
+        parse_resource_specifier(s, &AddressBech32Decoder::for_simulator())
     }
 }
 
@@ -87,7 +87,7 @@ impl FromStr for ResourceSpecifier {
 /// looked up from the simulator's substate store.
 pub fn parse_resource_specifier(
     input: &str,
-    bech32_decoder: &Bech32Decoder,
+    address_bech32_decoder: &AddressBech32Decoder,
 ) -> Result<ResourceSpecifier, ParseResourceSpecifierError> {
     // Splitting up the input into two parts: the resource address and the non-fungible ids
     let tokens = input
@@ -116,18 +116,22 @@ pub fn parse_resource_specifier(
         let amount = amount_string
             .parse()
             .map_err(ParseResourceSpecifierError::InvalidAmount)?;
-        let resource_address = bech32_decoder
-            .validate_and_decode_resource_address(resource_address_string)
-            .map_err(ParseResourceSpecifierError::InvalidResourceAddress)?;
+        let resource_address =
+            ResourceAddress::try_from_bech32(&address_bech32_decoder, resource_address_string)
+                .ok_or(ParseResourceSpecifierError::InvalidResourceAddress(
+                    resource_address_string.to_string(),
+                ))?;
 
         Ok(ResourceSpecifier::Amount(amount, resource_address))
     } else {
         // Paring the resource address fully first to use it for the non-fungible id type ledger
         // lookup
         let resource_address_string = tokens[0];
-        let resource_address = bech32_decoder
-            .validate_and_decode_resource_address(resource_address_string)
-            .map_err(ParseResourceSpecifierError::InvalidResourceAddress)?;
+        let resource_address =
+            ResourceAddress::try_from_bech32(&address_bech32_decoder, resource_address_string)
+                .ok_or(ParseResourceSpecifierError::InvalidResourceAddress(
+                    resource_address_string.to_string(),
+                ))?;
 
         // Parsing the non-fungible ids with the available id type
         let non_fungible_local_ids = tokens[1]
@@ -151,12 +155,12 @@ mod test {
     pub fn parsing_of_fungible_resource_specifier_succeeds() {
         // Arrange
         let resource_specifier_string =
-            "resource_sim1qxntya3nlyju8zsj8h86fz8ma5yl8smwjlg9tckkqvrsxhzgyn:900";
-        let bech32_decoder = Bech32Decoder::for_simulator();
+            "resource_sim1thvwu8dh6lk4y9mntemkvj25wllq8adq42skzufp4m8wxxuemugnez:900";
+        let address_bech32_decoder = AddressBech32Decoder::for_simulator();
 
         // Act
         let resource_specifier =
-            parse_resource_specifier(resource_specifier_string, &bech32_decoder)
+            parse_resource_specifier(resource_specifier_string, &address_bech32_decoder)
                 .expect("Failed to parse resource specifier");
 
         // Assert
@@ -164,11 +168,11 @@ mod test {
             resource_specifier,
             ResourceSpecifier::Amount(
                 900.into(),
-                bech32_decoder
-                    .validate_and_decode_resource_address(
-                        "resource_sim1qxntya3nlyju8zsj8h86fz8ma5yl8smwjlg9tckkqvrsxhzgyn"
-                    )
-                    .unwrap()
+                ResourceAddress::try_from_bech32(
+                    &address_bech32_decoder,
+                    "resource_sim1thvwu8dh6lk4y9mntemkvj25wllq8adq42skzufp4m8wxxuemugnez"
+                )
+                .unwrap()
             )
         )
     }
@@ -177,12 +181,12 @@ mod test {
     pub fn parsing_of_single_non_fungible_resource_specifier_succeeds() {
         // Arrange
         let resource_specifier_string =
-            "resource_sim1qgqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq056vhf:[1f5db2614c1c4c626e9c279349b240af7cb939ead29058fdff2c]";
-        let bech32_decoder = Bech32Decoder::for_simulator();
+            "resource_sim1nfxxxxxxxxxxsecpsgxxxxxxxxx004638826440xxxxxxxxxwj8qq5:[1f5db2614c1c4c626e9c279349b240af7cb939ead29058fdff2c]";
+        let address_bech32_decoder = AddressBech32Decoder::for_simulator();
 
         // Act
         let resource_specifier =
-            parse_resource_specifier(resource_specifier_string, &bech32_decoder)
+            parse_resource_specifier(resource_specifier_string, &address_bech32_decoder)
                 .expect("Failed to parse resource specifier");
 
         // Assert
@@ -194,7 +198,7 @@ mod test {
                     57, 234, 210, 144, 88, 253, 255, 44
                 ])
                 .unwrap()]),
-                ECDSA_SECP256K1_TOKEN
+                SECP256K1_SIGNATURE_VIRTUAL_BADGE
             )
         )
     }
@@ -204,12 +208,12 @@ mod test {
     pub fn parsing_of_multiple_non_fungible_resource_specifier_succeeds() {
         // Arrange
         let resource_specifier_string =
-            "resource_sim1qgqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq056vhf:[1f5db2614c1c4c626e9c279349b240af7cb939ead29058fdff2c],[d85dc446d8e5eff48db25b56f6b5001d14627b5a199598485a8d],[005d1ae87b0e7c5401d38e58d43291ffbd9ba6e1da54f87504a7]";
-        let bech32_decoder = Bech32Decoder::for_simulator();
+            "resource_sim1nfxxxxxxxxxxsecpsgxxxxxxxxx004638826440xxxxxxxxxwj8qq5:[1f5db2614c1c4c626e9c279349b240af7cb939ead29058fdff2c],[d85dc446d8e5eff48db25b56f6b5001d14627b5a199598485a8d],[005d1ae87b0e7c5401d38e58d43291ffbd9ba6e1da54f87504a7]";
+        let address_bech32_decoder = AddressBech32Decoder::for_simulator();
 
         // Act
         let resource_specifier =
-            parse_resource_specifier(resource_specifier_string, &bech32_decoder)
+            parse_resource_specifier(resource_specifier_string, &address_bech32_decoder)
                 .expect("Failed to parse resource specifier");
 
         // Assert
@@ -233,7 +237,7 @@ mod test {
                     ])
                     .unwrap()
                 ]),
-                ECDSA_SECP256K1_TOKEN
+                SECP256K1_SIGNATURE_VIRTUAL_BADGE
             )
         )
     }

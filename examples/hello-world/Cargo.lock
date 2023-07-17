@@ -60,9 +60,9 @@ dependencies = [
 
 [[package]]
 name = "bnum"
-version = "0.4.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1476379af3b7c37c15d168c6afe72742de86f2f1cb82549bfc9ff5ffb9580d9"
+checksum = "845141a4fade3f790628b7daaaa298a25b204fb28907eb54febe5142db6ce653"
 dependencies = [
  "num-integer",
  "num-traits",
@@ -286,6 +286,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fixedstr"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d14287b8bd26d2e2421bdd6235b421c507b1880687f1a71955bbd43d6bc9e8f9"
+
+[[package]]
 name = "generic-array"
 version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -484,8 +490,9 @@ dependencies = [
 
 [[package]]
 name = "native-sdk"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
+ "radix-engine-common",
  "radix-engine-derive",
  "radix-engine-interface",
  "sbor",
@@ -575,9 +582,9 @@ dependencies = [
 
 [[package]]
 name = "paste"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d01a5bd0424d00070b0098dd17ebca6f961a959dead1dbcbbbc1d1cd8d3deeba"
+checksum = "9f746c4065a8fa3fe23974dd82f15431cc8d40779821001404d10d2e79ca7d79"
 
 [[package]]
 name = "ppv-lite86"
@@ -616,28 +623,35 @@ dependencies = [
 
 [[package]]
 name = "radix-engine"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "bitflags",
  "colored",
  "hex",
+ "lazy_static",
  "moka",
  "native-sdk",
+ "num-traits",
  "parity-wasm",
+ "paste",
+ "radix-engine-common",
  "radix-engine-constants",
  "radix-engine-interface",
+ "radix-engine-store-interface",
+ "resources-tracker-macro",
  "sbor",
+ "serde_json",
  "strum",
  "transaction",
  "utils",
  "wasm-instrument",
  "wasmi",
- "wasmi-validation",
+ "wasmparser-nostd 0.100.1",
 ]
 
 [[package]]
 name = "radix-engine-common"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "bech32",
  "blake2",
@@ -648,18 +662,21 @@ dependencies = [
  "num-integer",
  "num-traits",
  "paste",
+ "radix-engine-constants",
  "radix-engine-derive",
  "sbor",
+ "serde",
+ "strum",
  "utils",
 ]
 
 [[package]]
 name = "radix-engine-constants"
-version = "0.9.0"
+version = "0.10.0"
 
 [[package]]
 name = "radix-engine-derive"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -669,26 +686,68 @@ dependencies = [
 
 [[package]]
 name = "radix-engine-interface"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "bitflags",
+ "const-sha1",
  "hex",
+ "lazy_static",
+ "paste",
  "radix-engine-common",
  "radix-engine-derive",
  "sbor",
  "scrypto-schema",
+ "serde_json",
  "strum",
  "utils",
 ]
 
 [[package]]
-name = "radix-engine-stores"
+name = "radix-engine-profiling"
 version = "0.9.0"
 dependencies = [
+ "fixedstr",
+]
+
+[[package]]
+name = "radix-engine-queries"
+version = "0.10.0"
+dependencies = [
+ "hex",
  "itertools",
  "radix-engine",
+ "radix-engine-constants",
+ "radix-engine-interface",
+ "radix-engine-store-interface",
+ "sbor",
+ "transaction",
+ "utils",
+]
+
+[[package]]
+name = "radix-engine-store-interface"
+version = "0.10.0"
+dependencies = [
+ "hex",
+ "itertools",
+ "radix-engine-common",
+ "radix-engine-derive",
  "radix-engine-interface",
  "sbor",
+ "utils",
+]
+
+[[package]]
+name = "radix-engine-stores"
+version = "0.10.0"
+dependencies = [
+ "hex",
+ "itertools",
+ "radix-engine-common",
+ "radix-engine-derive",
+ "radix-engine-store-interface",
+ "sbor",
+ "utils",
 ]
 
 [[package]]
@@ -751,6 +810,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "resources-tracker-macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "radix-engine-profiling",
+ "syn",
+]
+
+[[package]]
 name = "rustc_version"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -782,11 +851,12 @@ dependencies = [
 
 [[package]]
 name = "sbor"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "const-sha1",
  "hex",
  "lazy_static",
+ "paste",
  "sbor-derive",
  "serde",
  "utils",
@@ -794,7 +864,7 @@ dependencies = [
 
 [[package]]
 name = "sbor-derive"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "proc-macro2",
  "sbor-derive-common",
@@ -802,9 +872,10 @@ dependencies = [
 
 [[package]]
 name = "sbor-derive-common"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "const-sha1",
+ "itertools",
  "proc-macro2",
  "quote",
  "syn",
@@ -827,13 +898,15 @@ checksum = "d29ab0c6d3fc0ee92fe66e2d99f700eab17a8d57d1c1d3b748380fb20baa78cd"
 
 [[package]]
 name = "scrypto"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "bech32",
+ "const-sha1",
  "hex",
  "num-bigint",
  "num-traits",
  "paste",
+ "radix-engine-common",
  "radix-engine-derive",
  "radix-engine-interface",
  "sbor",
@@ -846,10 +919,12 @@ dependencies = [
 
 [[package]]
 name = "scrypto-derive"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "proc-macro2",
  "quote",
+ "radix-engine-common",
+ "sbor",
  "scrypto-schema",
  "serde",
  "serde_json",
@@ -858,8 +933,9 @@ dependencies = [
 
 [[package]]
 name = "scrypto-schema"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
+ "bitflags",
  "radix-engine-common",
  "sbor",
  "serde",
@@ -867,11 +943,13 @@ dependencies = [
 
 [[package]]
 name = "scrypto-unit"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "radix-engine",
  "radix-engine-constants",
  "radix-engine-interface",
+ "radix-engine-queries",
+ "radix-engine-store-interface",
  "radix-engine-stores",
  "sbor",
  "scrypto",
@@ -1079,8 +1157,9 @@ dependencies = [
 
 [[package]]
 name = "transaction"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
+ "bech32",
  "ed25519-dalek",
  "hex",
  "lazy_static",
@@ -1127,7 +1206,7 @@ checksum = "f962df74c8c05a667b5ee8bcf162993134c104e96440b663c8daa176dc772d8c"
 
 [[package]]
 name = "utils"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "indexmap",
  "serde",
@@ -1211,16 +1290,7 @@ dependencies = [
  "spin",
  "wasmi_arena",
  "wasmi_core",
- "wasmparser-nostd",
-]
-
-[[package]]
-name = "wasmi-validation"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "165343ecd6c018fc09ebcae280752702c9a2ef3e6f8d02f1cfcbdb53ef6d7937"
-dependencies = [
- "parity-wasm",
+ "wasmparser-nostd 0.91.0",
 ]
 
 [[package]]
@@ -1244,6 +1314,15 @@ name = "wasmparser-nostd"
 version = "0.91.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c37f310b5a62bfd5ae7c0f1d8e6f98af16a5d6d84ba764e9c36439ec14e318b"
+dependencies = [
+ "indexmap-nostd",
+]
+
+[[package]]
+name = "wasmparser-nostd"
+version = "0.100.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9157cab83003221bfd385833ab587a039f5d6fa7304854042ba358a3b09e0724"
 dependencies = [
  "indexmap-nostd",
 ]

@@ -1,9 +1,10 @@
 use crate::data::manifest::model::*;
-use crate::data::manifest::*;
-use crate::*;
-use sbor::value_kind::*;
-use sbor::*;
+use crate::internal_prelude::*;
 
+#[cfg(feature = "radix_engine_fuzzing")]
+use arbitrary::Arbitrary;
+
+#[cfg_attr(feature = "radix_engine_fuzzing", derive(Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestCustomValue {
     Address(ManifestAddress),
@@ -14,6 +15,27 @@ pub enum ManifestCustomValue {
     Decimal(ManifestDecimal),
     PreciseDecimal(ManifestPreciseDecimal),
     NonFungibleLocalId(ManifestNonFungibleLocalId),
+    AddressReservation(ManifestAddressReservation),
+}
+
+impl CustomValue<ManifestCustomValueKind> for ManifestCustomValue {
+    fn get_custom_value_kind(&self) -> ManifestCustomValueKind {
+        match self {
+            ManifestCustomValue::Address(_) => ManifestCustomValueKind::Address,
+            ManifestCustomValue::Bucket(_) => ManifestCustomValueKind::Bucket,
+            ManifestCustomValue::Proof(_) => ManifestCustomValueKind::Proof,
+            ManifestCustomValue::Expression(_) => ManifestCustomValueKind::Expression,
+            ManifestCustomValue::Blob(_) => ManifestCustomValueKind::Blob,
+            ManifestCustomValue::Decimal(_) => ManifestCustomValueKind::Decimal,
+            ManifestCustomValue::PreciseDecimal(_) => ManifestCustomValueKind::PreciseDecimal,
+            ManifestCustomValue::NonFungibleLocalId(_) => {
+                ManifestCustomValueKind::NonFungibleLocalId
+            }
+            ManifestCustomValue::AddressReservation(_) => {
+                ManifestCustomValueKind::AddressReservation
+            }
+        }
+    }
 }
 
 impl<E: Encoder<ManifestCustomValueKind>> Encode<ManifestCustomValueKind, E>
@@ -45,6 +67,9 @@ impl<E: Encoder<ManifestCustomValueKind>> Encode<ManifestCustomValueKind, E>
             ManifestCustomValue::NonFungibleLocalId(_) => encoder.write_value_kind(
                 ValueKind::Custom(ManifestCustomValueKind::NonFungibleLocalId),
             ),
+            ManifestCustomValue::AddressReservation(_) => encoder.write_value_kind(
+                ValueKind::Custom(ManifestCustomValueKind::AddressReservation),
+            ),
         }
     }
 
@@ -59,6 +84,7 @@ impl<E: Encoder<ManifestCustomValueKind>> Encode<ManifestCustomValueKind, E>
             ManifestCustomValue::Decimal(v) => v.encode_body(encoder),
             ManifestCustomValue::PreciseDecimal(v) => v.encode_body(encoder),
             ManifestCustomValue::NonFungibleLocalId(v) => v.encode_body(encoder),
+            ManifestCustomValue::AddressReservation(v) => v.encode_body(encoder),
         }
     }
 }
@@ -102,6 +128,10 @@ impl<D: Decoder<ManifestCustomValueKind>> Decode<ManifestCustomValueKind, D>
                 ManifestCustomValueKind::NonFungibleLocalId => {
                     ManifestNonFungibleLocalId::decode_body_with_value_kind(decoder, value_kind)
                         .map(Self::NonFungibleLocalId)
+                }
+                ManifestCustomValueKind::AddressReservation => {
+                    ManifestAddressReservation::decode_body_with_value_kind(decoder, value_kind)
+                        .map(Self::AddressReservation)
                 }
             },
             _ => Err(DecodeError::UnexpectedCustomValueKind {

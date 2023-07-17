@@ -1,8 +1,8 @@
 extern crate core;
 
 use radix_engine::types::*;
-use radix_engine_interface::api::node_modules::metadata::{MetadataEntry, MetadataValue};
-use radix_engine_interface::blueprints::resource::FromPublicKey;
+use radix_engine_interface::api::ObjectModuleId;
+use radix_engine_interface::blueprints::resource::{require, FromPublicKey};
 use scrypto_unit::*;
 use transaction::builder::ManifestBuilder;
 
@@ -12,7 +12,20 @@ enum Action {
     Withdraw,
     Deposit,
     Recall,
-    UpdateMetadata,
+    Freeze,
+}
+
+impl Action {
+    fn get_role(&self) -> (ObjectModuleId, RoleKey) {
+        match self {
+            Action::Mint => (ObjectModuleId::Main, RoleKey::new(MINTER_ROLE)),
+            Action::Burn => (ObjectModuleId::Main, RoleKey::new(BURNER_ROLE)),
+            Action::Withdraw => (ObjectModuleId::Main, RoleKey::new(WITHDRAWER_ROLE)),
+            Action::Deposit => (ObjectModuleId::Main, RoleKey::new(DEPOSITOR_ROLE)),
+            Action::Recall => (ObjectModuleId::Main, RoleKey::new(RECALLER_ROLE)),
+            Action::Freeze => (ObjectModuleId::Main, RoleKey::new(FREEZER_ROLE)),
+        }
+    }
 }
 
 fn test_resource_auth(action: Action, update_auth: bool, use_other_auth: bool, expect_err: bool) {
@@ -25,28 +38,30 @@ fn test_resource_auth(action: Action, update_auth: bool, use_other_auth: bool, e
         burn_auth,
         withdraw_auth,
         recall_auth,
-        update_metadata_auth,
+        _update_metadata_auth,
+        freeze_auth,
         admin_auth,
-    ) = test_runner.create_restricted_token(account);
+    ) = test_runner.create_restricted_token(OwnerRole::None, account);
     let (_, updated_auth) = test_runner.create_restricted_burn_token(account);
 
     if update_auth {
-        let function = match action {
-            Action::Mint => "set_mintable",
-            Action::Burn => "set_burnable",
-            Action::Withdraw => "set_withdrawable",
-            Action::Deposit => "set_depositable",
-            Action::Recall => "set_recallable",
-            Action::UpdateMetadata => "set_updateable_metadata",
-        };
-        test_runner.update_resource_auth(
-            function,
-            admin_auth,
-            token_address,
-            updated_auth,
-            account,
-            public_key,
-        );
+        let (module, role_key) = action.get_role();
+        let manifest = ManifestBuilder::new()
+            .lock_fee(test_runner.faucet_component(), 500u32.into())
+            .create_proof_from_account(account, admin_auth)
+            .update_role(
+                token_address.into(),
+                module,
+                role_key,
+                rule!(require(updated_auth)),
+            )
+            .build();
+        test_runner
+            .execute_manifest(
+                manifest,
+                btreeset![NonFungibleGlobalId::from_public_key(&public_key)],
+            )
+            .expect_commit_success();
     }
 
     let auth_to_use = if use_other_auth {
@@ -58,65 +73,67 @@ fn test_resource_auth(action: Action, update_auth: bool, use_other_auth: bool, e
             Action::Withdraw => withdraw_auth,
             Action::Deposit => mint_auth, // Any bad auth
             Action::Recall => recall_auth,
-            Action::UpdateMetadata => update_metadata_auth,
+            Action::Freeze => freeze_auth,
         }
     };
 
     // Act
     let mut builder = ManifestBuilder::new();
-    builder.lock_fee(FAUCET_COMPONENT, 10u32.into());
-    builder.create_proof_from_account_by_amount(account, auth_to_use, Decimal::one());
+    builder.lock_fee(test_runner.faucet_component(), 500u32.into());
+    builder.create_proof_from_account_of_amount(account, auth_to_use, Decimal::one());
 
     match action {
         Action::Mint => builder
             .mint_fungible(token_address, dec!("1.0"))
             .call_method(
                 account,
-                "deposit_batch",
+                "try_deposit_batch_or_abort",
                 manifest_args!(ManifestExpression::EntireWorktop),
             ),
         Action::Burn => builder
             .create_proof_from_account(account, withdraw_auth)
             .withdraw_from_account(account, token_address, dec!("1.0"))
-            .burn(dec!("1.0"), token_address)
+            .burn_from_worktop(dec!("1.0"), token_address)
             .call_method(
                 account,
-                "deposit_batch",
+                "try_deposit_batch_or_abort",
                 manifest_args!(ManifestExpression::EntireWorktop),
             ),
         Action::Withdraw => builder
             .withdraw_from_account(account, token_address, dec!("1.0"))
             .call_method(
                 account,
-                "deposit_batch",
+                "try_deposit_batch_or_abort",
                 manifest_args!(ManifestExpression::EntireWorktop),
             ),
         Action::Deposit => builder
             .create_proof_from_account(account, withdraw_auth)
             .withdraw_from_account(account, token_address, dec!("1.0"))
-            .take_from_worktop(token_address, |builder, bucket_id| {
-                builder.call_method(account, "deposit", manifest_args!(bucket_id))
+            .take_all_from_worktop(token_address, |builder, bucket_id| {
+                builder.call_method(account, "try_deposit_or_abort", manifest_args!(bucket_id))
             })
             .call_method(
                 account,
-                "deposit_batch",
+                "try_deposit_batch_or_abort",
                 manifest_args!(ManifestExpression::EntireWorktop),
             ),
         Action::Recall => {
             let vaults = test_runner.get_component_vaults(account, token_address);
             let vault_id = vaults[0];
 
-            builder.recall(vault_id, Decimal::ONE).call_method(
-                account,
-                "deposit_batch",
-                manifest_args!(ManifestExpression::EntireWorktop),
-            )
+            builder
+                .recall(InternalAddress::new_or_panic(vault_id.into()), Decimal::ONE)
+                .call_method(
+                    account,
+                    "try_deposit_batch_or_abort",
+                    manifest_args!(ManifestExpression::EntireWorktop),
+                )
         }
-        Action::UpdateMetadata => builder.set_metadata(
-            Address::Resource(token_address),
-            "key".to_string(),
-            MetadataEntry::Value(MetadataValue::String("value".to_string())),
-        ),
+        Action::Freeze => {
+            let vaults = test_runner.get_component_vaults(account, token_address);
+            let vault_id = vaults[0];
+            builder.freeze_withdraw(InternalAddress::new_or_panic(vault_id.into()))
+        }
     };
 
     let manifest = builder.build();
@@ -170,27 +187,27 @@ fn cannot_withdraw_with_wrong_auth() {
 }
 
 #[test]
-fn can_reprocess_call_data_auth() {
+fn can_recall_with_auth() {
     test_resource_auth(Action::Recall, false, false, false);
     test_resource_auth(Action::Recall, true, true, false);
 }
 
 #[test]
-fn cannot_reprocess_call_data_wrong_auth() {
+fn cannot_recall_with_wrong_auth() {
     test_resource_auth(Action::Recall, false, true, true);
     test_resource_auth(Action::Recall, true, false, true);
 }
 
 #[test]
-fn can_update_metadata_with_auth() {
-    test_resource_auth(Action::UpdateMetadata, false, false, false);
-    test_resource_auth(Action::UpdateMetadata, true, true, false);
+fn can_freeze_with_auth() {
+    test_resource_auth(Action::Freeze, false, false, false);
+    test_resource_auth(Action::Freeze, true, true, false);
 }
 
 #[test]
-fn cannot_update_metadata_with_wrong_auth() {
-    test_resource_auth(Action::UpdateMetadata, false, true, true);
-    test_resource_auth(Action::UpdateMetadata, true, false, true);
+fn cannot_freeze_with_wrong_auth() {
+    test_resource_auth(Action::Freeze, false, true, true);
+    test_resource_auth(Action::Freeze, true, false, true);
 }
 
 #[test]

@@ -1,4 +1,4 @@
-use radix_engine::errors::{InterpreterError, RuntimeError};
+use radix_engine::errors::RuntimeError;
 use radix_engine::types::*;
 use radix_engine_interface::blueprints::resource::FromPublicKey;
 use scrypto_unit::*;
@@ -12,7 +12,7 @@ fn test_component() {
 
     // Create component
     let manifest1 = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(
             package,
             "ComponentTest",
@@ -28,7 +28,7 @@ fn test_component() {
 
     // Call functions & methods
     let manifest2 = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(
             package,
             "ComponentTest",
@@ -39,7 +39,7 @@ fn test_component() {
         .call_method(component, "put_component_state", manifest_args!())
         .call_method(
             account,
-            "deposit_batch",
+            "try_deposit_batch_or_abort",
             manifest_args!(ManifestExpression::EntireWorktop),
         )
         .build();
@@ -58,7 +58,7 @@ fn invalid_blueprint_name_should_cause_error() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(
             package_addr,
             "NonExistentBlueprint",
@@ -69,15 +69,5 @@ fn invalid_blueprint_name_should_cause_error() {
     let receipt = test_runner.execute_manifest(manifest, vec![]);
 
     // Assert
-    receipt.expect_specific_failure(|e| {
-        if let RuntimeError::InterpreterError(InterpreterError::ScryptoBlueprintNotFound(
-            package_address,
-            blueprint_name,
-        )) = e
-        {
-            package_addr.eq(&package_address) && blueprint_name.eq("NonExistentBlueprint")
-        } else {
-            false
-        }
-    });
+    receipt.expect_specific_failure(|e| matches!(e, RuntimeError::SystemError(..)));
 }

@@ -1,4 +1,4 @@
-use radix_engine_interface::data::manifest::model::*;
+use crate::internal_prelude::*;
 use sbor::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8,7 +8,7 @@ pub enum HeaderValidationError {
     EpochRangeTooLarge,
     InvalidNetwork,
     InvalidCostUnitLimit,
-    InvalidTipBps,
+    InvalidTipPercentage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,17 +26,13 @@ impl From<EncodeError> for SignatureValidationError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Sbor)]
-pub enum ManifestIdAllocationError {
-    OutOfID,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestIdValidationError {
-    IdAllocationError(ManifestIdAllocationError),
     BucketNotFound(ManifestBucket),
     ProofNotFound(ManifestProof),
     BucketLocked(ManifestBucket),
+    AddressReservationNotFound(ManifestAddressReservation),
+    AddressNotFound(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,17 +44,57 @@ pub enum CallDataValidationError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransactionValidationError {
     TransactionTooLarge,
-    SerializationError(EncodeError),
-    DeserializationError(DecodeError),
-    IntentHashRejected,
+    EncodeError(EncodeError),
+    PrepareError(PrepareError),
     HeaderValidationError(HeaderValidationError),
     SignatureValidationError(SignatureValidationError),
     IdValidationError(ManifestIdValidationError),
     CallDataValidationError(CallDataValidationError),
+    InvalidMessage(InvalidMessageError),
+}
+
+impl From<PrepareError> for TransactionValidationError {
+    fn from(value: PrepareError) -> Self {
+        Self::PrepareError(value)
+    }
 }
 
 impl From<EncodeError> for TransactionValidationError {
-    fn from(err: EncodeError) -> Self {
-        Self::SerializationError(err)
+    fn from(value: EncodeError) -> Self {
+        Self::EncodeError(value)
     }
+}
+
+impl From<InvalidMessageError> for TransactionValidationError {
+    fn from(value: InvalidMessageError) -> Self {
+        Self::InvalidMessage(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidMessageError {
+    PlaintextMessageTooLong {
+        actual: usize,
+        permitted: usize,
+    },
+    MimeTypeTooLong {
+        actual: usize,
+        permitted: usize,
+    },
+    EncryptedMessageTooLong {
+        actual: usize,
+        permitted: usize,
+    },
+    NoDecryptors,
+    MismatchingDecryptorCurves {
+        actual: CurveType,
+        expected: CurveType,
+    },
+    TooManyDecryptors {
+        actual: usize,
+        permitted: usize,
+    },
+    NoDecryptorsForCurveType {
+        curve_type: CurveType,
+    },
 }

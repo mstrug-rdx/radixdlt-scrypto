@@ -51,9 +51,9 @@ dependencies = [
 
 [[package]]
 name = "bnum"
-version = "0.4.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1476379af3b7c37c15d168c6afe72742de86f2f1cb82549bfc9ff5ffb9580d9"
+checksum = "845141a4fade3f790628b7daaaa298a25b204fb28907eb54febe5142db6ce653"
 dependencies = [
  "num-integer",
  "num-traits",
@@ -98,6 +98,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "either"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fcaabb2fef8c910e7f4c7ce9f67a1283a1715879a7c230ca9d6d1ae31f16d91"
+
+[[package]]
 name = "generic-array"
 version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -127,6 +133,9 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "indexmap"
@@ -134,6 +143,15 @@ version = "2.0.0-pre"
 source = "git+https://github.com/bluss/indexmap?rev=eedabaca9f84e520eab01325b305c08f3773e66c#eedabaca9f84e520eab01325b305c08f3773e66c"
 dependencies = [
  "hashbrown",
+]
+
+[[package]]
+name = "itertools"
+version = "0.10.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0fd2260e829bddf4cb6ea802289de2f86d6a7a690192fbe91b3f46e0f2c8473"
+dependencies = [
+ "either",
 ]
 
 [[package]]
@@ -210,9 +228,9 @@ checksum = "6f61fba1741ea2b3d6a1e3178721804bb716a68a6aeba1149b5d52e3d464ea66"
 
 [[package]]
 name = "paste"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d01a5bd0424d00070b0098dd17ebca6f961a959dead1dbcbbbc1d1cd8d3deeba"
+checksum = "9f746c4065a8fa3fe23974dd82f15431cc8d40779821001404d10d2e79ca7d79"
 
 [[package]]
 name = "proc-macro2"
@@ -234,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "radix-engine-common"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "bech32",
  "blake2",
@@ -245,14 +263,21 @@ dependencies = [
  "num-integer",
  "num-traits",
  "paste",
+ "radix-engine-constants",
  "radix-engine-derive",
  "sbor",
+ "serde",
+ "strum",
  "utils",
 ]
 
 [[package]]
+name = "radix-engine-constants"
+version = "0.10.0"
+
+[[package]]
 name = "radix-engine-derive"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -262,14 +287,18 @@ dependencies = [
 
 [[package]]
 name = "radix-engine-interface"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "bitflags",
+ "const-sha1",
  "hex",
+ "lazy_static",
+ "paste",
  "radix-engine-common",
  "radix-engine-derive",
  "sbor",
  "scrypto-schema",
+ "serde_json",
  "strum",
  "utils",
 ]
@@ -288,11 +317,12 @@ checksum = "7b4b9743ed687d4b4bcedf9ff5eaa7398495ae14e61cba0a295704edbc7decde"
 
 [[package]]
 name = "sbor"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "const-sha1",
  "hex",
  "lazy_static",
+ "paste",
  "sbor-derive",
  "serde",
  "utils",
@@ -300,7 +330,7 @@ dependencies = [
 
 [[package]]
 name = "sbor-derive"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "proc-macro2",
  "sbor-derive-common",
@@ -308,9 +338,10 @@ dependencies = [
 
 [[package]]
 name = "sbor-derive-common"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "const-sha1",
+ "itertools",
  "proc-macro2",
  "quote",
  "syn",
@@ -318,13 +349,15 @@ dependencies = [
 
 [[package]]
 name = "scrypto"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "bech32",
+ "const-sha1",
  "hex",
  "num-bigint",
  "num-traits",
  "paste",
+ "radix-engine-common",
  "radix-engine-derive",
  "radix-engine-interface",
  "sbor",
@@ -336,10 +369,12 @@ dependencies = [
 
 [[package]]
 name = "scrypto-derive"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "proc-macro2",
  "quote",
+ "radix-engine-common",
+ "sbor",
  "scrypto-schema",
  "serde",
  "serde_json",
@@ -348,8 +383,9 @@ dependencies = [
 
 [[package]]
 name = "scrypto-schema"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
+ "bitflags",
  "radix-engine-common",
  "sbor",
  "serde",
@@ -445,7 +481,7 @@ checksum = "84a22b9f218b40614adcb3f4ff08b703773ad44fa9423e4e0d346d5db86e4ebc"
 
 [[package]]
 name = "utils"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "hashbrown",
  "indexmap",

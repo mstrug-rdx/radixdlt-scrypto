@@ -1,17 +1,34 @@
 use crate::data::scrypto::model::*;
 use crate::math::*;
 use crate::*;
+use radix_engine_interface::blueprints::resource::VaultFreezeFlags;
 use sbor::rust::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, ScryptoSbor)]
 pub enum ResourceError {
     InsufficientBalance,
+    InvalidTakeAmount,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, ScryptoSbor)]
+#[sbor(transparent)]
 pub struct LiquidFungibleResource {
     /// The total amount.
     amount: Decimal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, ScryptoSbor)]
+#[sbor(transparent)]
+pub struct VaultFrozenFlag {
+    pub frozen: VaultFreezeFlags,
+}
+
+impl Default for VaultFrozenFlag {
+    fn default() -> Self {
+        Self {
+            frozen: VaultFreezeFlags::empty(),
+        }
+    }
 }
 
 impl LiquidFungibleResource {
@@ -31,11 +48,9 @@ impl LiquidFungibleResource {
         self.amount.is_zero()
     }
 
-    pub fn put(&mut self, other: LiquidFungibleResource) -> Result<(), ResourceError> {
+    pub fn put(&mut self, other: LiquidFungibleResource) {
         // update liquidity
         self.amount += other.amount();
-
-        Ok(())
     }
 
     pub fn take_by_amount(
@@ -57,9 +72,14 @@ impl LiquidFungibleResource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, ScryptoSbor)]
+pub struct LiquidNonFungibleVault {
+    pub amount: Decimal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, ScryptoSbor)]
 pub struct LiquidNonFungibleResource {
     /// The total non-fungible ids.
-    ids: BTreeSet<NonFungibleLocalId>,
+    pub ids: BTreeSet<NonFungibleLocalId>,
 }
 
 impl LiquidNonFungibleResource {

@@ -6,19 +6,19 @@ cd "$(dirname "$0")"
 
 echo "Building the workspace packages (with all extended features)..."
 
-(set -x; cargo build --features serde)
-(set -x; cargo test --no-run --features serde)
-(set -x; cargo bench --no-run --features serde)
-
-echo "Building the engine in different configurations..."
-
-(set -x; cd radix-engine; cargo build --features wasmer)
-(set -x; cd radix-engine; cargo build --no-default-features --features alloc)
+(set -x; cargo build)
+(set -x; cargo test --no-run)
+(set -x; cargo bench --no-run)
 
 echo "Building the simulator packages..."
 
 (set -x; cd simulator; cargo build)
 (set -x; cd simulator; cargo test --no-run)
+
+echo "Building the engine in different configurations..."
+
+(set -x; cd radix-engine; cargo build --no-default-features --features alloc,moka)
+(set -x; cd radix-engine; cargo build --features wasmer,resource_tracker)
 
 # We use a globally loaded scrypto CLI so that this script works even if the code doesn't compile at present
 # It's also a little faster. If you wish to use the local version instead, swap out the below line.

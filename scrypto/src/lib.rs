@@ -40,7 +40,7 @@ pub use scrypto_derive::{blueprint, NonFungibleData};
 // Re-export Radix Engine Interface modules.
 extern crate radix_engine_interface;
 pub use radix_engine_interface::{
-    address, api, blueprints, constants, crypto, data, math, network, schema, time,
+    address, api, blueprints, constants, crypto, data, math, network, schema, time, types,
 };
 
 // This is to make derives work within this crate.
@@ -69,10 +69,6 @@ pub fn set_up_panic_hook() {
             "<unknown>".to_owned()
         };
 
-        crate::runtime::Logger::error(sbor::rust::format!(
-            "Panicked at '{}', {}",
-            payload,
-            location
-        ));
+        crate::runtime::Runtime::panic(sbor::rust::format!("{} @ {}", payload, location));
     }));
 }

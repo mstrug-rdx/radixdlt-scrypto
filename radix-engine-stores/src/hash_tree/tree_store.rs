@@ -1,13 +1,12 @@
 // Re-exports
 pub use super::types::{Nibble, NibblePath, NodeKey, Version};
 
-use radix_engine_interface::api::types::{NodeModuleId, RENodeId, SubstateOffset};
-use radix_engine_interface::crypto::Hash;
-use radix_engine_interface::data::scrypto::{scrypto_decode, scrypto_encode, ScryptoSbor};
-use radix_engine_interface::*;
-use sbor::rust::collections::HashMap;
-use sbor::rust::vec::Vec;
+use radix_engine_common::crypto::Hash;
+use radix_engine_common::data::scrypto::{scrypto_decode, scrypto_encode, ScryptoSbor};
+use radix_engine_derive::ScryptoSbor;
 use sbor::*;
+use utils::rust::collections::{hash_map_new, HashMap};
+use utils::rust::vec::Vec;
 
 /// A physical tree node, to be used in the storage.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, ScryptoSbor)]
@@ -50,33 +49,27 @@ pub struct TreeLeafNode<P> {
     pub value_hash: Hash,
 }
 
-/// Payload of the leafs within the upper (ReNode+Module) layer.
-/// Please note that a ReNode leaf is conceptually identical to a root of the Substates' subtree
-/// (i.e. one exists if and only if the other exists). For this reason, this payload does _not_
-/// just reference the subtree root, but actually contains it inside.
-/// This design decision also brings minor space and runtime benefits, and avoids special-casing
-/// the physical `NodeKey`s (no clashes can occur between ReNode leaf and Substates' root).
-#[derive(Clone, PartialEq, Eq, Hash, Debug, ScryptoSbor)]
-pub struct ReNodeModulePayload {
-    /// ReNode ID.
-    pub re_node_id: RENodeId,
-    /// Module ID.
-    pub node_mode_id: NodeModuleId,
-    /// An embedded root of the descendant Substate layer tree.
-    pub substates_root: TreeNode<SubstateOffset>,
-}
-
 /// A payload carried by a physical leaf.
 /// The top ReNodeModule tree carries an `ReNodeModulePayload` payload.
-/// The sub-trees carry  a `SubstateOffset` payload.
+/// The sub-trees carry  a `SubstateKey` payload.
 pub trait Payload:
     Clone + PartialEq + Eq + rust::hash::Hash + rust::fmt::Debug + ScryptoSbor
 {
 }
 
-impl Payload for ReNodeModulePayload {}
+/// Payload of the leafs within the upper layer.
+/// Please note that an upper-layer leaf is conceptually identical to a lower-layer root (i.e. one
+/// exists if and only if the other exists). For this reason, this payload does _not_ just reference
+/// the lower-layer root, but actually contains it inside.
+/// This design decision also brings minor space and runtime benefits, and avoids special-casing
+/// the physical `NodeKey`s (no key clashes can occur between the layers).
+pub type PartitionPayload = TreeNode<()>;
 
-impl Payload for SubstateOffset {}
+impl Payload for PartitionPayload {}
+
+/// Payload of the leafs within the lower layer.
+/// We do not need any extra information - the implicitly stored `NodeKey` is our value.
+impl Payload for () {}
 
 /// The "read" part of a physical tree node storage SPI.
 pub trait ReadableTreeStore<P: Payload> {
@@ -99,10 +92,10 @@ pub trait TreeStore<P: Payload>: ReadableTreeStore<P> + WriteableTreeStore<P> {}
 impl<S: ReadableTreeStore<P> + WriteableTreeStore<P>, P: Payload> TreeStore<P> for S {}
 
 /// A `TreeStore` based on memory object copies (i.e. no serialization).
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct TypedInMemoryTreeStore {
-    pub root_tree_nodes: HashMap<NodeKey, TreeNode<ReNodeModulePayload>>,
-    pub sub_tree_nodes: HashMap<NodeKey, TreeNode<SubstateOffset>>,
+    pub root_tree_nodes: HashMap<NodeKey, TreeNode<PartitionPayload>>,
+    pub sub_tree_nodes: HashMap<NodeKey, TreeNode<()>>,
     pub stale_key_buffer: Vec<NodeKey>,
 }
 
@@ -110,21 +103,21 @@ impl TypedInMemoryTreeStore {
     /// A constructor of a newly-initialized, empty store.
     pub fn new() -> TypedInMemoryTreeStore {
         TypedInMemoryTreeStore {
-            root_tree_nodes: HashMap::new(),
-            sub_tree_nodes: HashMap::new(),
+            root_tree_nodes: hash_map_new(),
+            sub_tree_nodes: hash_map_new(),
             stale_key_buffer: Vec::new(),
         }
     }
 }
 
-impl ReadableTreeStore<SubstateOffset> for TypedInMemoryTreeStore {
-    fn get_node(&self, key: &NodeKey) -> Option<TreeNode<SubstateOffset>> {
+impl ReadableTreeStore<()> for TypedInMemoryTreeStore {
+    fn get_node(&self, key: &NodeKey) -> Option<TreeNode<()>> {
         self.sub_tree_nodes.get(key).cloned()
     }
 }
 
-impl WriteableTreeStore<SubstateOffset> for TypedInMemoryTreeStore {
-    fn insert_node(&mut self, key: NodeKey, node: TreeNode<SubstateOffset>) {
+impl WriteableTreeStore<()> for TypedInMemoryTreeStore {
+    fn insert_node(&mut self, key: NodeKey, node: TreeNode<()>) {
         self.sub_tree_nodes.insert(key, node);
     }
 
@@ -133,14 +126,14 @@ impl WriteableTreeStore<SubstateOffset> for TypedInMemoryTreeStore {
     }
 }
 
-impl ReadableTreeStore<ReNodeModulePayload> for TypedInMemoryTreeStore {
-    fn get_node(&self, key: &NodeKey) -> Option<TreeNode<ReNodeModulePayload>> {
+impl ReadableTreeStore<PartitionPayload> for TypedInMemoryTreeStore {
+    fn get_node(&self, key: &NodeKey) -> Option<TreeNode<PartitionPayload>> {
         self.root_tree_nodes.get(key).cloned()
     }
 }
 
-impl WriteableTreeStore<ReNodeModulePayload> for TypedInMemoryTreeStore {
-    fn insert_node(&mut self, key: NodeKey, node: TreeNode<ReNodeModulePayload>) {
+impl WriteableTreeStore<PartitionPayload> for TypedInMemoryTreeStore {
+    fn insert_node(&mut self, key: NodeKey, node: TreeNode<PartitionPayload>) {
         self.root_tree_nodes.insert(key, node);
     }
 
@@ -160,7 +153,7 @@ impl SerializedInMemoryTreeStore {
     /// A constructor of a newly-initialized, empty store.
     pub fn new() -> Self {
         Self {
-            memory: HashMap::new(),
+            memory: hash_map_new(),
             stale_key_buffer: Vec::new(),
         }
     }
@@ -230,6 +223,10 @@ impl<X: CustomValueKind, D: Decoder<X>> Decode<X, D> for Nibble {
 
 impl<T: CustomTypeKind<GlobalTypeId>> Describe<T> for Nibble {
     const TYPE_ID: GlobalTypeId = GlobalTypeId::well_known(basic_well_known_types::U8_ID);
+
+    fn type_data() -> TypeData<T, GlobalTypeId> {
+        basic_well_known_types::u8_type_data()
+    }
 }
 
 impl<X: CustomValueKind> Categorize<X> for NibblePath {
@@ -270,4 +267,8 @@ impl<X: CustomValueKind, D: Decoder<X>> Decode<X, D> for NibblePath {
 
 impl<T: CustomTypeKind<GlobalTypeId>> Describe<T> for NibblePath {
     const TYPE_ID: GlobalTypeId = <(bool, Vec<u8>) as Describe<T>>::TYPE_ID;
+
+    fn type_data() -> TypeData<T, GlobalTypeId> {
+        <(bool, Vec<u8>) as Describe<T>>::type_data()
+    }
 }

@@ -5,16 +5,27 @@ use scrypto::prelude::*;
 mod faucet {
     struct Faucet {
         vault: Vault,
-        transactions: KeyValueStore<Hash, u64>,
+        transactions: KeyValueStore<Hash, Epoch>,
     }
 
     impl Faucet {
-        pub fn new(bucket: Bucket) -> ComponentAddress {
+        pub fn new(
+            address_reservation: GlobalAddressReservation,
+            bucket: Bucket,
+        ) -> Global<Faucet> {
             Self {
                 vault: Vault::with_bucket(bucket),
                 transactions: KeyValueStore::new(),
             }
             .instantiate()
+            .prepare_to_globalize(OwnerRole::None)
+            .with_address(address_reservation)
+            .metadata(metadata! {
+                init {
+                    "name" => "Test Faucet".to_owned(), locked;
+                    "description" => "A simple faucet for distributing tokens for testing purposes.".to_owned(), locked;
+                }
+            })
             .globalize()
         }
 
@@ -31,7 +42,7 @@ mod faucet {
         pub fn lock_fee(&mut self, amount: Decimal) {
             // There is MAX_COST_UNIT_LIMIT and COST_UNIT_PRICE which limit how much fee can be spent
             // per transaction, thus no further limitation is applied.
-            self.vault.lock_fee(amount);
+            self.vault.as_fungible().lock_fee(amount);
         }
     }
 }

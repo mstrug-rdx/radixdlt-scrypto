@@ -1,8 +1,10 @@
 [workspace]
 members = [
     "faucet",
+    "metadata",
     "radiswap",
-    "flash_loan"
+    "flash_loan",
+    "genesis_helper",
 ]
 
 [profile.release]

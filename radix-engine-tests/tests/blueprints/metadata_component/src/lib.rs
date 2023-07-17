@@ -6,33 +6,40 @@ mod metadata_component {
 
     impl MetadataComponent {
         pub fn new(key: String, value: String) {
-            let component = MetadataComponent {}.instantiate();
-            let metadata = Metadata::new();
-            metadata.set(key.clone(), value.clone());
-            let component_address = component.globalize_with_metadata(metadata);
-            let global: MetadataComponentGlobalComponentRef = component_address.into();
-            let metadata = global.metadata();
+            let global = Self {}
+                .instantiate()
+                .prepare_to_globalize(OwnerRole::None)
+                .metadata(metadata! {
+                    roles {
+                        metadata_setter => rule!(allow_all), locked;
+                        metadata_setter_updater => rule!(deny_all), locked;
+                        metadata_locker => rule!(allow_all), locked;
+                        metadata_locker_updater => rule!(deny_all), locked;
+                    },
+                    init {
+                        key.clone() => value.clone(), locked;
+                    }
+                })
+                .globalize();
 
-            assert_eq!(metadata.get_string(key).unwrap(), value);
+            let value0: String = global.get_metadata(key).unwrap();
+            assert_eq!(value0, value);
         }
 
         pub fn new2(key: String, value: String) {
-            let component = MetadataComponent {}.instantiate();
-            let component_address = component.globalize_with_access_rules(
-                AccessRulesConfig::new().default(AccessRule::AllowAll, AccessRule::DenyAll),
-            );
+            let global = MetadataComponent {}
+                .instantiate()
+                .prepare_to_globalize(OwnerRole::Fixed(rule!(allow_all)))
+                .globalize();
 
-            let global: MetadataComponentGlobalComponentRef = component_address.into();
-            let metadata = global.metadata();
-            metadata.set(key.clone(), value.clone());
+            global.set_metadata(key.clone(), value.clone());
+            let value0: String = global.get_metadata(key).unwrap();
 
-            assert_eq!(metadata.get_string(key).unwrap(), value);
+            assert_eq!(value0, value);
         }
 
-        pub fn remove_metadata(address: ComponentAddress, key: String) {
-            let global = GlobalComponentRef(address);
-            let metadata = global.metadata();
-            metadata.remove(key);
+        pub fn remove_metadata(global: Global<MetadataComponent>, key: String) {
+            global.remove_metadata(key);
         }
     }
 }

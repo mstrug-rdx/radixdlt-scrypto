@@ -1,16 +1,14 @@
-use sbor::rust::str::FromStr;
-use sbor::rust::string::String;
-use sbor::rust::string::ToString;
-use sbor::rust::vec;
-use sbor::rust::vec::Vec;
+use self::SchemaSubPath::{Field, Index};
+use super::ScryptoSchema;
+use crate::*;
+#[cfg(feature = "radix_engine_fuzzing")]
+use arbitrary::Arbitrary;
+use sbor::rust::prelude::*;
 use sbor::*;
 
-use self::SchemaSubPath::{Field, Index};
-use crate::*;
+// FIXME: remove schema path
 
-use super::ScryptoSchema;
-use super::ScryptoTypeKind;
-
+#[cfg_attr(feature = "radix_engine_fuzzing", derive(Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Sbor, Ord, PartialOrd)]
 pub enum SchemaSubPath {
     Index(usize),
@@ -31,6 +29,7 @@ impl FromStr for SchemaSubPath {
 }
 
 /// Describes a value located in some sbor given a schema for that sbor
+#[cfg_attr(feature = "radix_engine_fuzzing", derive(Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Sbor, Ord, PartialOrd)]
 pub struct SchemaPath(pub Vec<SchemaSubPath>);
 
@@ -58,7 +57,7 @@ impl SchemaPath {
         &self,
         schema: &ScryptoSchema,
         type_index: LocalTypeIndex,
-    ) -> Option<(SborPath, ScryptoTypeKind<LocalTypeIndex>)> {
+    ) -> Option<(SborPath, LocalTypeIndex)> {
         let mut sbor_path: Vec<usize> = vec![];
         let mut cur_type = type_index;
 
@@ -97,12 +96,7 @@ impl SchemaPath {
             }
         }
 
-        let type_kind = schema
-            .resolve_type_kind(cur_type)
-            .cloned()
-            .expect("Inconsistent schema");
-
-        Some((SborPath::new(sbor_path), type_kind))
+        Some((SborPath::new(sbor_path), cur_type))
     }
 }
 

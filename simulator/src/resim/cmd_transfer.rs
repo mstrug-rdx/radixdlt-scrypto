@@ -17,7 +17,7 @@ pub struct Transfer {
     /// The recipient component address.
     pub recipient: SimulatorComponentAddress,
 
-    /// The proofs to add to the auth zone, in form of "<amount>,<resource_address>" or "<resource_address>:<nf_local_id1>,<nf_local_id2>"
+    /// The proofs to add to the auth zone, in form of "<resource_address>:<amount>" or "<resource_address>:<nf_local_id1>,<nf_local_id2>"
     #[clap(short, long, multiple = true)]
     pub proofs: Option<Vec<String>>,
 
@@ -40,17 +40,18 @@ pub struct Transfer {
 
 impl Transfer {
     pub fn run<O: std::io::Write>(&self, out: &mut O) -> Result<(), Error> {
-        let bech32_decoder = Bech32Decoder::for_simulator();
+        let address_bech32_decoder = AddressBech32Decoder::for_simulator();
 
         let default_account = get_default_account()?;
         let proofs = self.proofs.clone().unwrap_or_default();
 
-        let mut manifest_builder = &mut ManifestBuilder::new();
+        let mut manifest_builder = ManifestBuilder::new();
+        manifest_builder.lock_fee(FAUCET, 5000u32.into());
         for resource_specifier in proofs {
-            manifest_builder = manifest_builder.borrow_mut(|builder| {
+            manifest_builder.borrow_mut(|builder| {
                 create_proof_from_account(
                     builder,
-                    &bech32_decoder,
+                    &address_bech32_decoder,
                     default_account,
                     resource_specifier,
                 )
@@ -58,13 +59,11 @@ impl Transfer {
                 Ok(builder)
             })?;
         }
-
         let manifest = manifest_builder
-            .lock_fee(FAUCET_COMPONENT, 100.into())
             .withdraw_from_account(default_account, self.resource_address.0, self.amount)
             .call_method(
                 self.recipient.0,
-                "deposit_batch",
+                "try_deposit_batch_or_refund",
                 manifest_args!(ManifestExpression::EntireWorktop),
             )
             .build();

@@ -1,77 +1,63 @@
 use radix_engine::errors::RejectionError;
-use radix_engine::kernel::interpreters::ScryptoInterpreter;
-use radix_engine::ledger::TypedInMemorySubstateStore;
+use radix_engine::system::bootstrap::Bootstrapper;
 use radix_engine::transaction::execute_and_commit_transaction;
 use radix_engine::transaction::{ExecutionConfig, FeeReserveConfig};
 use radix_engine::types::*;
-use radix_engine::wasm::WasmInstrumenter;
-use radix_engine::wasm::{DefaultWasmEngine, WasmMeteringConfig};
-use radix_engine_constants::DEFAULT_COST_UNIT_LIMIT;
+use radix_engine::vm::wasm::{DefaultWasmEngine, WasmValidatorConfigV1};
+use radix_engine::vm::ScryptoVm;
+use radix_engine_stores::memory_db::InMemorySubstateDatabase;
 use scrypto_unit::*;
 use transaction::builder::ManifestBuilder;
 use transaction::builder::TransactionBuilder;
-use transaction::ecdsa_secp256k1::EcdsaSecp256k1PrivateKey;
-use transaction::errors::{HeaderValidationError, TransactionValidationError};
-use transaction::model::{Executable, NotarizedTransaction, TransactionHeader};
-use transaction::validation::{
-    NotarizedTransactionValidator, TestIntentHashManager, TransactionValidator, ValidationConfig,
+use transaction::errors::TransactionValidationError;
+use transaction::model::{
+    NotarizedTransactionV1, TransactionHeaderV1, TransactionPayload,
+    ValidatedNotarizedTransactionV1,
 };
-
-#[test]
-fn low_cost_unit_limit_should_result_in_rejection() {
-    // Arrange
-    let transaction = create_notarized_transaction(TransactionParams {
-        cost_unit_limit: 1,
-        start_epoch_inclusive: 0,
-        end_epoch_exclusive: 10,
-    });
-
-    // Act
-    let result = get_executable(&transaction);
-
-    // Assert
-    assert_eq!(
-        result.expect_err("Should be an error"),
-        TransactionValidationError::HeaderValidationError(
-            HeaderValidationError::InvalidCostUnitLimit
-        )
-    );
-}
+use transaction::prelude::TransactionManifestV1;
+use transaction::signing::secp256k1::Secp256k1PrivateKey;
+use transaction::validation::{
+    NotarizedTransactionValidator, TransactionValidator, ValidationConfig,
+};
 
 #[test]
 fn transaction_executed_before_valid_returns_that_rejection_reason() {
     // Arrange
     let mut test_runner = TestRunner::builder().build();
 
-    const CURRENT_EPOCH: u64 = 150;
-    const VALID_FROM_EPOCH: u64 = 151;
-    const VALID_UNTIL_EPOCH: u64 = 151;
+    let current_epoch = Epoch::of(150);
+    let valid_from_epoch = Epoch::of(151);
+    let valid_until_epoch = Epoch::of(151);
 
-    test_runner.set_current_epoch(CURRENT_EPOCH);
+    test_runner.set_current_epoch(current_epoch);
 
-    let transaction = create_notarized_transaction(TransactionParams {
-        cost_unit_limit: DEFAULT_COST_UNIT_LIMIT,
-        start_epoch_inclusive: VALID_FROM_EPOCH,
-        end_epoch_exclusive: VALID_UNTIL_EPOCH + 1,
-    });
+    let transaction = create_notarized_transaction(
+        TransactionParams {
+            start_epoch_inclusive: valid_from_epoch,
+            end_epoch_exclusive: valid_until_epoch.next(),
+        },
+        ManifestBuilder::new()
+            .lock_fee(FAUCET, 500u32.into())
+            .clear_auth_zone()
+            .build(),
+    );
 
     // Act
-    let receipt = test_runner.execute_transaction(get_executable(&transaction).unwrap());
+    let receipt = test_runner.execute_transaction(
+        get_validated(&transaction).unwrap().get_executable(),
+        FeeReserveConfig::default(),
+        ExecutionConfig::for_test_transaction(),
+    );
 
     // Assert
     let rejection_error = receipt.expect_rejection();
-    if !matches!(
+    assert_eq!(
         rejection_error,
-        RejectionError::TransactionEpochNotYetValid {
-            valid_from: VALID_FROM_EPOCH,
-            current_epoch: CURRENT_EPOCH
+        &RejectionError::TransactionEpochNotYetValid {
+            valid_from: valid_from_epoch,
+            current_epoch
         }
-    ) {
-        panic!(
-            "Expected TransactionEpochNotYetValid error but was {}",
-            rejection_error
-        );
-    }
+    );
 }
 
 #[test]
@@ -79,70 +65,79 @@ fn transaction_executed_after_valid_returns_that_rejection_reason() {
     // Arrange
     let mut test_runner = TestRunner::builder().build();
 
-    const CURRENT_EPOCH: u64 = 157;
-    const VALID_FROM_EPOCH: u64 = 151;
-    const VALID_UNTIL_EPOCH: u64 = 154;
+    let current_epoch = Epoch::of(157);
+    let valid_from_epoch = Epoch::of(151);
+    let valid_until_epoch = Epoch::of(154);
 
-    test_runner.set_current_epoch(CURRENT_EPOCH);
+    test_runner.set_current_epoch(current_epoch);
 
-    let transaction = create_notarized_transaction(TransactionParams {
-        cost_unit_limit: DEFAULT_COST_UNIT_LIMIT,
-        start_epoch_inclusive: VALID_FROM_EPOCH,
-        end_epoch_exclusive: VALID_UNTIL_EPOCH + 1,
-    });
+    let transaction = create_notarized_transaction(
+        TransactionParams {
+            start_epoch_inclusive: valid_from_epoch,
+            end_epoch_exclusive: valid_until_epoch.next(),
+        },
+        ManifestBuilder::new()
+            .lock_fee(FAUCET, 500u32.into())
+            .clear_auth_zone()
+            .build(),
+    );
 
     // Act
-    let receipt = test_runner.execute_transaction(get_executable(&transaction).unwrap());
+    let receipt = test_runner.execute_transaction(
+        get_validated(&transaction).unwrap().get_executable(),
+        FeeReserveConfig::default(),
+        ExecutionConfig::for_test_transaction(),
+    );
 
     // Assert
     let rejection_error = receipt.expect_rejection();
-    if !matches!(
+    assert_eq!(
         rejection_error,
-        RejectionError::TransactionEpochNoLongerValid {
-            valid_until: VALID_UNTIL_EPOCH,
-            current_epoch: CURRENT_EPOCH
+        &RejectionError::TransactionEpochNoLongerValid {
+            valid_until: valid_until_epoch,
+            current_epoch
         }
-    ) {
-        panic!(
-            "Expected TransactionEpochNoLongerValid error but was {}",
-            rejection_error
-        );
-    }
+    );
 }
 
 #[test]
 fn test_normal_transaction_flow() {
     // Arrange
-    let mut scrypto_interpreter = ScryptoInterpreter {
+    let mut scrypto_interpreter = ScryptoVm {
         wasm_engine: DefaultWasmEngine::default(),
-        wasm_instrumenter: WasmInstrumenter::default(),
-        wasm_metering_config: WasmMeteringConfig::V0,
+        wasm_validator_config: WasmValidatorConfigV1::new(),
     };
-    let mut substate_store = TypedInMemorySubstateStore::with_bootstrap(&scrypto_interpreter);
+    let mut substate_db = InMemorySubstateDatabase::standard();
+    Bootstrapper::new(&mut substate_db, &scrypto_interpreter, true)
+        .bootstrap_test_default()
+        .unwrap();
 
-    let intent_hash_manager = TestIntentHashManager::new();
     let fee_reserve_config = FeeReserveConfig::default();
-    let execution_config = ExecutionConfig::standard();
-    let raw_transaction = create_notarized_transaction(TransactionParams {
-        cost_unit_limit: 5_000_000,
-        start_epoch_inclusive: 0,
-        end_epoch_exclusive: 100,
-    })
-    .to_bytes()
+    let execution_config = ExecutionConfig::for_test_transaction().with_kernel_trace(true);
+    let raw_transaction = create_notarized_transaction(
+        TransactionParams {
+            start_epoch_inclusive: Epoch::zero(),
+            end_epoch_exclusive: Epoch::of(100),
+        },
+        ManifestBuilder::new()
+            .lock_fee(FAUCET, 500u32.into())
+            .add_blob([123u8; 1023 * 1024].to_vec())
+            .clear_auth_zone()
+            .build(),
+    )
+    .to_raw()
     .unwrap();
 
     let validator = NotarizedTransactionValidator::new(ValidationConfig::simulator());
-    let transaction = validator
-        .check_length_and_decode_from_slice(&raw_transaction)
+    let validated = validator
+        .validate_from_raw(&raw_transaction)
         .expect("Invalid transaction");
-
-    let executable = validator
-        .validate(&transaction, raw_transaction.len(), &intent_hash_manager)
-        .expect("Invalid transaction");
+    let executable = validated.get_executable();
+    assert_eq!(executable.payload_size(), 1023 * 1024 + 391);
 
     // Act
     let receipt = execute_and_commit_transaction(
-        &mut substate_store,
+        &mut substate_db,
         &mut scrypto_interpreter,
         &fee_reserve_config,
         &execution_config,
@@ -153,44 +148,39 @@ fn test_normal_transaction_flow() {
     receipt.expect_commit_success();
 }
 
-fn get_executable<'a>(
-    transaction: &'a NotarizedTransaction,
-) -> Result<Executable<'a>, TransactionValidationError> {
+fn get_validated(
+    transaction: &NotarizedTransactionV1,
+) -> Result<ValidatedNotarizedTransactionV1, TransactionValidationError> {
     let validator = NotarizedTransactionValidator::new(ValidationConfig::simulator());
 
-    validator.validate(&transaction, 0, &TestIntentHashManager::new())
+    validator.validate(transaction.prepare().unwrap())
 }
 
 struct TransactionParams {
-    cost_unit_limit: u32,
-    start_epoch_inclusive: u64,
-    end_epoch_exclusive: u64,
+    start_epoch_inclusive: Epoch,
+    end_epoch_exclusive: Epoch,
 }
 
-fn create_notarized_transaction(params: TransactionParams) -> NotarizedTransaction {
+fn create_notarized_transaction(
+    params: TransactionParams,
+    manifest: TransactionManifestV1,
+) -> NotarizedTransactionV1 {
     // create key pairs
-    let sk1 = EcdsaSecp256k1PrivateKey::from_u64(1).unwrap();
-    let sk2 = EcdsaSecp256k1PrivateKey::from_u64(2).unwrap();
-    let sk_notary = EcdsaSecp256k1PrivateKey::from_u64(3).unwrap();
+    let sk1 = Secp256k1PrivateKey::from_u64(1).unwrap();
+    let sk2 = Secp256k1PrivateKey::from_u64(2).unwrap();
+    let sk_notary = Secp256k1PrivateKey::from_u64(3).unwrap();
 
     TransactionBuilder::new()
-        .header(TransactionHeader {
-            version: 1,
+        .header(TransactionHeaderV1 {
             network_id: NetworkDefinition::simulator().id,
             start_epoch_inclusive: params.start_epoch_inclusive,
             end_epoch_exclusive: params.end_epoch_exclusive,
             nonce: 5,
             notary_public_key: sk_notary.public_key().into(),
-            notary_as_signatory: false,
-            cost_unit_limit: params.cost_unit_limit,
+            notary_is_signatory: false,
             tip_percentage: 5,
         })
-        .manifest(
-            ManifestBuilder::new()
-                .lock_fee(FAUCET_COMPONENT, 10.into())
-                .clear_auth_zone()
-                .build(),
-        )
+        .manifest(manifest)
         .sign(&sk1)
         .sign(&sk2)
         .notarize(&sk_notary)

@@ -2,6 +2,10 @@ use radix_engine::types::*;
 use scrypto_unit::*;
 use transaction::builder::ManifestBuilder;
 
+const TARGET_PACKAGE_ADDRESS: [u8; NodeId::LENGTH] = [
+    13, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1,
+];
+
 /// This tests the external_blueprint! and external_component! macros
 #[test]
 fn test_external_bridges() {
@@ -10,13 +14,18 @@ fn test_external_bridges() {
 
     // Part 1 - Upload the target and caller packages
     // Note - we put them in separate packages so that we test that the package call is to an external package
-    let target_package_address = test_runner.compile_and_publish("./tests/blueprints/component");
+    test_runner.compile_and_publish_at_address(
+        "./tests/blueprints/component",
+        PackageAddress::new_or_panic(TARGET_PACKAGE_ADDRESS),
+    );
+    let target_package_address = PackageAddress::new_or_panic(TARGET_PACKAGE_ADDRESS);
+
     let caller_package_address =
         test_runner.compile_and_publish("./tests/blueprints/external_blueprint_caller");
 
     // Part 2 - Get a target component address
     let manifest1 = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(
             target_package_address,
             "ExternalBlueprintTarget",
@@ -31,7 +40,7 @@ fn test_external_bridges() {
 
     // Part 3 - Get the caller component address
     let manifest2 = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10u32.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(
             caller_package_address,
             "ExternalBlueprintCaller",
@@ -46,11 +55,11 @@ fn test_external_bridges() {
 
     // ACT
     let manifest3 = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10u32.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_method(
             caller_component_address,
             "run_tests_with_external_blueprint",
-            manifest_args!(target_package_address),
+            manifest_args!(),
         )
         .build();
     let receipt3 = test_runner.execute_manifest(manifest3, vec![]);
@@ -60,7 +69,7 @@ fn test_external_bridges() {
 
     // ACT
     let manifest4 = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10u32.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_method(
             caller_component_address,
             "run_tests_with_external_component",

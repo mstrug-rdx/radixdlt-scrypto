@@ -2,51 +2,32 @@ use scrypto::prelude::*;
 
 #[blueprint]
 mod factory {
+    enable_method_auth! {
+        methods {
+            set_address => restrict_to: [OWNER];
+        }
+    }
+
     struct Factory {
-        my_address: Option<ComponentAddress>,
+        my_component: Option<Global<Factory>>,
     }
 
     impl Factory {
-        pub fn create_raw() -> ComponentAddress {
-            let component = Self {
-                my_address: Option::None,
-            }
-            .instantiate();
-
-            let access_rules = AccessRulesConfig::new()
-                .method(
-                    "set_address",
-                    rule!(require(Runtime::package_token())),
-                    LOCKED,
-                )
-                .default(rule!(deny_all), LOCKED);
-
-            component.globalize_with_access_rules(access_rules)
+        pub fn create_raw() -> Global<Factory> {
+            Self { my_component: None }
+                .instantiate()
+                .prepare_to_globalize(OwnerRole::Fixed(rule!(require(Runtime::package_token()))))
+                .globalize()
         }
 
-        pub fn create() -> ComponentAddress {
-            let component = Self {
-                my_address: Option::None,
-            }
-            .instantiate();
-
-            let access_rules = AccessRulesConfig::new()
-                .method(
-                    "set_address",
-                    rule!(require(Runtime::package_token())),
-                    LOCKED,
-                )
-                .default(rule!(deny_all), LOCKED);
-
-            let component_address = component.globalize_with_access_rules(access_rules);
-            let component_ref: FactoryGlobalComponentRef = component_address.into();
-            component_ref.set_address(component_address);
-
-            component_address
+        pub fn create() -> Global<Factory> {
+            let component = Self::create_raw();
+            component.set_address(component.clone());
+            component
         }
 
-        pub fn set_address(&mut self, my_address: ComponentAddress) {
-            self.my_address = Option::Some(my_address);
+        pub fn set_address(&mut self, my_component: Global<Factory>) {
+            self.my_component = Some(my_component);
         }
     }
 }

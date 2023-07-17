@@ -73,7 +73,7 @@ macro_rules! pdec {
 #[macro_export]
 macro_rules! well_known_scrypto_custom_type {
     // with describe
-    ($t:ty, $value_kind:expr, $schema_type:expr, $size:expr, $well_known_id:ident) => {
+    ($t:ty, $value_kind:expr, $schema_type:expr, $size:expr, $well_known_id:ident, $well_known_type_data_method:ident) => {
         impl sbor::Categorize<$crate::data::scrypto::ScryptoCustomValueKind> for $t {
             #[inline]
             fn value_kind() -> sbor::ValueKind<$crate::data::scrypto::ScryptoCustomValueKind> {
@@ -109,9 +109,13 @@ macro_rules! well_known_scrypto_custom_type {
         }
 
         impl sbor::Describe<$crate::data::scrypto::ScryptoCustomTypeKind> for $t {
-            const TYPE_ID: sbor::schema::GlobalTypeId = sbor::schema::GlobalTypeId::well_known(
+            const TYPE_ID: sbor::GlobalTypeId = sbor::GlobalTypeId::well_known(
                 $crate::data::scrypto::well_known_scrypto_custom_types::$well_known_id,
             );
+
+            fn type_data() -> sbor::TypeData<$crate::data::scrypto::ScryptoCustomTypeKind, sbor::GlobalTypeId> {
+                $crate::data::scrypto::well_known_scrypto_custom_types::$well_known_type_data_method()
+            }
         }
     };
 }
@@ -246,97 +250,9 @@ macro_rules! manifest_args {
     }};
 }
 
-/// Constructs an address.
 #[macro_export]
-macro_rules! construct_address {
-    (EntityType::FungibleResource, $($bytes:expr),*) => {
-        $crate::data::scrypto::model::ResourceAddress::Fungible([$($bytes),*])
-    };
-    (EntityType::NonFungibleResource, $($bytes:expr),*) => {
-        $crate::data::scrypto::model::ResourceAddress::NonFungible([$($bytes),*])
-    };
-    (EntityType::Package, $($bytes:expr),*) => {
-        $crate::data::scrypto::model::PackageAddress::Normal([$($bytes),*])
-    };
-    (EntityType::NormalComponent, $($bytes:expr),*) => {
-        $crate::data::scrypto::model::ComponentAddress::Normal([$($bytes),*])
-    };
-    (EntityType::AccountComponent, $($bytes:expr),*) => {
-        $crate::data::scrypto::model::ComponentAddress::Account([$($bytes),*])
-    };
-    (EntityType::EpochManager, $($bytes:expr),*) => {
-        $crate::data::scrypto::model::ComponentAddress::EpochManager([$($bytes),*])
-    };
-    (EntityType::Clock, $($bytes:expr),*) => {
-        $crate::data::scrypto::model::ComponentAddress::Clock([$($bytes),*])
-    };
-}
-
-#[macro_export]
-macro_rules! vanity_address {
-    (EntityType::$entity_type:tt, $last_byte:literal) => {
-        $crate::construct_address!(
-            EntityType::$entity_type,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            $last_byte
-        )
-    };
-    (EntityType::$entity_type:tt, [$repeat_byte:literal; 26]) => {
-        $crate::construct_address!(
-            EntityType::$entity_type,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte,
-            $repeat_byte
-        )
-    };
-    (EntityType::$entity_type:tt, $($bytes:literal),*) => {
-        $crate::construct_address!($crate::address::EntityType::$entity_type, $($bytes),*)
-    };
+macro_rules! to_manifest_value_and_unwrap {
+    ( $value:expr ) => {{
+        $crate::data::manifest::to_manifest_value($value).unwrap()
+    }};
 }

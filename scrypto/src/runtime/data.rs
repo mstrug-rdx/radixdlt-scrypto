@@ -1,10 +1,10 @@
-use radix_engine_interface::api::component::*;
-use radix_engine_interface::api::substate_api::LockFlags;
-use radix_engine_interface::api::types::*;
-use radix_engine_interface::api::ClientSubstateApi;
+use radix_engine_interface::api::field_lock_api::LockFlags;
+use radix_engine_interface::api::ClientFieldLockApi;
+use radix_engine_interface::api::{ClientActorApi, OBJECT_HANDLE_SELF};
 use radix_engine_interface::data::scrypto::{
     scrypto_decode, scrypto_encode, ScryptoDecode, ScryptoEncode, ScryptoValue,
 };
+use radix_engine_interface::types::*;
 use sbor::rust::fmt;
 use sbor::rust::marker::PhantomData;
 use sbor::rust::ops::{Deref, DerefMut};
@@ -42,7 +42,7 @@ impl<V: ScryptoEncode> Deref for DataRef<V> {
 impl<V: ScryptoEncode> Drop for DataRef<V> {
     fn drop(&mut self) {
         let mut env = ScryptoEnv;
-        env.sys_drop_lock(self.lock_handle).unwrap();
+        env.field_lock_release(self.lock_handle).unwrap();
     }
 }
 
@@ -77,18 +77,11 @@ impl<V: ScryptoEncode> Drop for DataRefMut<V> {
     fn drop(&mut self) {
         let mut env = ScryptoEnv;
         let substate = match &self.original_data {
-            OriginalData::KeyValueStoreEntry(_) => {
-                let substate: Option<ScryptoValue> =
-                    Option::Some(scrypto_decode(&scrypto_encode(&self.value).unwrap()).unwrap());
-                scrypto_encode(&substate).unwrap()
-            }
-            OriginalData::ComponentAppState(_) => scrypto_encode(&ComponentStateSubstate(
-                scrypto_decode(&scrypto_encode(&self.value).unwrap()).unwrap(),
-            ))
-            .unwrap(),
+            OriginalData::KeyValueStoreEntry(_) => scrypto_encode(&Some(&self.value)).unwrap(),
+            OriginalData::ComponentAppState(_) => scrypto_encode(&self.value).unwrap(),
         };
-        env.sys_write_substate(self.lock_handle, substate).unwrap();
-        env.sys_drop_lock(self.lock_handle).unwrap();
+        env.field_lock_write(self.lock_handle, substate).unwrap();
+        env.field_lock_release(self.lock_handle).unwrap();
     }
 }
 
@@ -107,14 +100,12 @@ impl<V: ScryptoEncode> DerefMut for DataRefMut<V> {
 }
 
 pub struct ComponentStatePointer<V: 'static + ScryptoEncode + ScryptoDecode> {
-    node_id: RENodeId,
     phantom_data: PhantomData<V>,
 }
 
 impl<V: 'static + ScryptoEncode + ScryptoDecode> ComponentStatePointer<V> {
-    pub fn new(node_id: RENodeId) -> Self {
+    pub fn new() -> Self {
         Self {
-            node_id,
             phantom_data: PhantomData,
         }
     }
@@ -122,13 +113,13 @@ impl<V: 'static + ScryptoEncode + ScryptoDecode> ComponentStatePointer<V> {
     pub fn get(&self) -> DataRef<V> {
         let mut env = ScryptoEnv;
         let lock_handle = env
-            .sys_lock_substate(
-                self.node_id,
-                SubstateOffset::Component(ComponentOffset::State0),
+            .actor_open_field(
+                OBJECT_HANDLE_SELF,
+                ComponentField::State0 as u8,
                 LockFlags::read_only(),
             )
             .unwrap();
-        let raw_substate = env.sys_read_substate(lock_handle).unwrap();
+        let raw_substate = env.field_lock_read(lock_handle).unwrap();
         let value: V = scrypto_decode(&raw_substate).unwrap();
         DataRef { lock_handle, value }
     }
@@ -136,13 +127,13 @@ impl<V: 'static + ScryptoEncode + ScryptoDecode> ComponentStatePointer<V> {
     pub fn get_mut(&mut self) -> DataRefMut<V> {
         let mut env = ScryptoEnv;
         let lock_handle = env
-            .sys_lock_substate(
-                self.node_id,
-                SubstateOffset::Component(ComponentOffset::State0),
+            .actor_open_field(
+                OBJECT_HANDLE_SELF,
+                ComponentField::State0 as u8,
                 LockFlags::MUTABLE,
             )
             .unwrap();
-        let raw_substate = env.sys_read_substate(lock_handle).unwrap();
+        let raw_substate = env.field_lock_read(lock_handle).unwrap();
         let value: V = scrypto_decode(&raw_substate).unwrap();
         DataRefMut {
             lock_handle,

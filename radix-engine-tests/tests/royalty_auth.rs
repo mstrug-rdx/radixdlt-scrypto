@@ -3,10 +3,191 @@ use radix_engine_interface::blueprints::resource::FromPublicKey;
 use scrypto_unit::*;
 use transaction::builder::ManifestBuilder;
 
+#[test]
+fn package_owner_can_claim_royalty() {
+    // Arrange
+    let (
+        mut test_runner,
+        account,
+        public_key,
+        package_address,
+        _component_address,
+        owner_badge_resource,
+    ) = set_up_package_and_component();
+
+    // Act
+    let receipt = test_runner.execute_manifest(
+        ManifestBuilder::new()
+            .lock_fee(account, 5000u32.into())
+            .create_proof_from_account_of_non_fungibles(
+                account,
+                owner_badge_resource,
+                &btreeset!(NonFungibleLocalId::integer(1)),
+            )
+            .claim_package_royalties(package_address)
+            .call_method(
+                account,
+                "try_deposit_batch_or_abort",
+                manifest_args!(ManifestExpression::EntireWorktop),
+            )
+            .build(),
+        vec![NonFungibleGlobalId::from_public_key(&public_key)],
+    );
+
+    // Assert
+    receipt.expect_commit_success();
+}
+
+#[test]
+fn non_package_owner_cannot_claim_royalty() {
+    // Arrange
+    let (
+        mut test_runner,
+        account,
+        public_key,
+        package_address,
+        _component_address,
+        _owner_badge_resource,
+    ) = set_up_package_and_component();
+
+    // Act
+    let receipt = test_runner.execute_manifest(
+        ManifestBuilder::new()
+            .lock_fee(account, 5000u32.into())
+            .claim_package_royalties(package_address)
+            .call_method(
+                account,
+                "try_deposit_batch_or_abort",
+                manifest_args!(ManifestExpression::EntireWorktop),
+            )
+            .build(),
+        vec![NonFungibleGlobalId::from_public_key(&public_key)],
+    );
+
+    // Assert
+    receipt.expect_commit_failure();
+}
+
+#[test]
+fn component_owner_can_set_royalty() {
+    // Arrange
+    let (
+        mut test_runner,
+        account,
+        public_key,
+        _package_address,
+        component_address,
+        owner_badge_resource,
+    ) = set_up_package_and_component();
+
+    // Act
+    let receipt = test_runner.execute_manifest(
+        ManifestBuilder::new()
+            .lock_fee(account, 5000u32.into())
+            .create_proof_from_account_of_non_fungibles(
+                account,
+                owner_badge_resource,
+                &btreeset!(NonFungibleLocalId::integer(1)),
+            )
+            .set_component_royalty(
+                component_address,
+                "paid_method".to_string(),
+                RoyaltyAmount::Free,
+            )
+            .build(),
+        vec![NonFungibleGlobalId::from_public_key(&public_key)],
+    );
+
+    // Assert
+    receipt.expect_commit_success();
+}
+
+#[test]
+fn non_component_owner_cannot_set_royalty() {
+    // Arrange
+    let (mut test_runner, account, public_key, _package_address, component_address, _) =
+        set_up_package_and_component();
+
+    // Negative case
+    let receipt = test_runner.execute_manifest(
+        ManifestBuilder::new()
+            .lock_fee(account, 5000u32.into())
+            .set_component_royalty(
+                component_address,
+                "paid_method".to_string(),
+                RoyaltyAmount::Free,
+            )
+            .build(),
+        vec![NonFungibleGlobalId::from_public_key(&public_key)],
+    );
+
+    // Assert
+    receipt.expect_commit_failure();
+}
+
+#[test]
+fn component_owner_can_claim_royalty() {
+    // Arrange
+    let (
+        mut test_runner,
+        account,
+        public_key,
+        _package_address,
+        component_address,
+        owner_badge_resource,
+    ) = set_up_package_and_component();
+
+    // Act
+    let receipt = test_runner.execute_manifest(
+        ManifestBuilder::new()
+            .lock_fee(account, 5000u32.into())
+            .create_proof_from_account_of_non_fungibles(
+                account,
+                owner_badge_resource,
+                &btreeset!(NonFungibleLocalId::integer(1)),
+            )
+            .claim_component_royalties(component_address)
+            .call_method(
+                account,
+                "try_deposit_batch_or_abort",
+                manifest_args!(ManifestExpression::EntireWorktop),
+            )
+            .build(),
+        vec![NonFungibleGlobalId::from_public_key(&public_key)],
+    );
+
+    // Assert
+    receipt.expect_commit_success();
+}
+
+#[test]
+fn non_component_owner_cannot_claim_royalty() {
+    // Arrange
+    let (mut test_runner, account, public_key, _package_address, component_address, _) =
+        set_up_package_and_component();
+
+    // Act
+    let receipt = test_runner.execute_manifest(
+        ManifestBuilder::new()
+            .lock_fee(account, 5000u32.into())
+            .claim_component_royalties(component_address)
+            .call_method(
+                account,
+                "try_deposit_batch_or_abort",
+                manifest_args!(ManifestExpression::EntireWorktop),
+            )
+            .build(),
+        vec![NonFungibleGlobalId::from_public_key(&public_key)],
+    );
+
+    // Assert
+    receipt.expect_commit_failure();
+}
+
 fn set_up_package_and_component() -> (
     TestRunner,
     ComponentAddress,
-    EcdsaSecp256k1PublicKey,
+    Secp256k1PublicKey,
     PackageAddress,
     ComponentAddress,
     ResourceAddress,
@@ -19,41 +200,25 @@ fn set_up_package_and_component() -> (
         NonFungibleGlobalId::new(owner_badge_resource, NonFungibleLocalId::integer(1));
 
     // Publish package
-    let (code, schema) = Compile::compile("./tests/blueprints/royalty-auth");
+    let (code, definition) = Compile::compile("./tests/blueprints/royalty-auth");
     let receipt = test_runner.execute_manifest(
         ManifestBuilder::new()
-            .lock_fee(account, 10u32.into())
-            .publish_package_with_owner(code, schema, owner_badge_addr.clone())
+            .lock_fee(account, 5000u32.into())
+            .publish_package_with_owner(code, definition, owner_badge_addr.clone())
             .build(),
         vec![NonFungibleGlobalId::from_public_key(&public_key)],
     );
     let package_address = receipt.expect_commit(true).new_package_addresses()[0];
 
-    // Enable package royalty
-    let receipt = test_runner.execute_manifest(
-        ManifestBuilder::new()
-            .lock_fee(account, 10u32.into())
-            .create_proof_from_account(account, owner_badge_resource)
-            .set_package_royalty_config(
-                package_address,
-                BTreeMap::from([(
-                    "RoyaltyTest".to_owned(),
-                    RoyaltyConfigBuilder::new()
-                        .add_rule("paid_method", 2)
-                        .add_rule("paid_method_panic", 2)
-                        .default(0),
-                )]),
-            )
-            .build(),
-        vec![NonFungibleGlobalId::from_public_key(&public_key)],
-    );
-    receipt.expect_commit_success();
-
     // Instantiate component
     let receipt = test_runner.execute_manifest(
         ManifestBuilder::new()
-            .lock_fee(account, 10u32.into())
-            .create_proof_from_account(account, owner_badge_resource)
+            .lock_fee(account, 5000u32.into())
+            .create_proof_from_account_of_non_fungibles(
+                account,
+                owner_badge_resource,
+                &btreeset!(NonFungibleLocalId::integer(1)),
+            )
             .call_function(
                 package_address,
                 "RoyaltyTest",
@@ -62,7 +227,7 @@ fn set_up_package_and_component() -> (
             )
             .call_method(
                 account,
-                "deposit_batch",
+                "try_deposit_batch_or_abort",
                 manifest_args!(ManifestExpression::EntireWorktop),
             )
             .build(),
@@ -78,164 +243,4 @@ fn set_up_package_and_component() -> (
         component_address,
         owner_badge_resource,
     )
-}
-
-#[test]
-fn test_only_package_owner_can_set_royalty_config() {
-    let (
-        mut test_runner,
-        account,
-        public_key,
-        package_address,
-        _component_address,
-        owner_badge_resource,
-    ) = set_up_package_and_component();
-
-    let receipt = test_runner.execute_manifest(
-        ManifestBuilder::new()
-            .lock_fee(account, 100.into())
-            .create_proof_from_account(account, owner_badge_resource)
-            .set_package_royalty_config(
-                package_address,
-                BTreeMap::from([(
-                    "RoyaltyTest".to_owned(),
-                    RoyaltyConfigBuilder::new().default(0),
-                )]),
-            )
-            .build(),
-        vec![NonFungibleGlobalId::from_public_key(&public_key)],
-    );
-    receipt.expect_commit_success();
-
-    // Negative case
-    let receipt = test_runner.execute_manifest(
-        ManifestBuilder::new()
-            .lock_fee(account, 100.into())
-            .set_package_royalty_config(
-                package_address,
-                BTreeMap::from([(
-                    "RoyaltyTest".to_owned(),
-                    RoyaltyConfigBuilder::new().default(0),
-                )]),
-            )
-            .build(),
-        vec![NonFungibleGlobalId::from_public_key(&public_key)],
-    );
-    receipt.expect_commit_failure();
-}
-
-#[test]
-fn test_only_package_owner_can_claim_royalty() {
-    let (
-        mut test_runner,
-        account,
-        public_key,
-        package_address,
-        _component_address,
-        owner_badge_resource,
-    ) = set_up_package_and_component();
-
-    let receipt = test_runner.execute_manifest(
-        ManifestBuilder::new()
-            .lock_fee(account, 100.into())
-            .create_proof_from_account(account, owner_badge_resource)
-            .claim_package_royalty(package_address)
-            .call_method(
-                account,
-                "deposit_batch",
-                manifest_args!(ManifestExpression::EntireWorktop),
-            )
-            .build(),
-        vec![NonFungibleGlobalId::from_public_key(&public_key)],
-    );
-    receipt.expect_commit_success();
-
-    // Negative case
-    let receipt = test_runner.execute_manifest(
-        ManifestBuilder::new()
-            .lock_fee(account, 100.into())
-            .claim_package_royalty(package_address)
-            .call_method(
-                account,
-                "deposit_batch",
-                manifest_args!(ManifestExpression::EntireWorktop),
-            )
-            .build(),
-        vec![NonFungibleGlobalId::from_public_key(&public_key)],
-    );
-    receipt.expect_commit_failure();
-}
-
-#[test]
-fn test_only_component_owner_can_set_royalty_config() {
-    let (
-        mut test_runner,
-        account,
-        public_key,
-        _package_address,
-        component_address,
-        owner_badge_resource,
-    ) = set_up_package_and_component();
-
-    let receipt = test_runner.execute_manifest(
-        ManifestBuilder::new()
-            .lock_fee(account, 100.into())
-            .create_proof_from_account(account, owner_badge_resource)
-            .set_component_royalty_config(component_address, RoyaltyConfigBuilder::new().default(0))
-            .build(),
-        vec![NonFungibleGlobalId::from_public_key(&public_key)],
-    );
-    receipt.expect_commit_success();
-
-    // Negative case
-    let receipt = test_runner.execute_manifest(
-        ManifestBuilder::new()
-            .lock_fee(account, 100.into())
-            .set_component_royalty_config(component_address, RoyaltyConfigBuilder::new().default(0))
-            .build(),
-        vec![NonFungibleGlobalId::from_public_key(&public_key)],
-    );
-    receipt.expect_commit_failure();
-}
-
-#[test]
-fn test_only_component_owner_can_claim_royalty() {
-    let (
-        mut test_runner,
-        account,
-        public_key,
-        _package_address,
-        component_address,
-        owner_badge_resource,
-    ) = set_up_package_and_component();
-
-    let receipt = test_runner.execute_manifest(
-        ManifestBuilder::new()
-            .lock_fee(account, 100.into())
-            .create_proof_from_account(account, owner_badge_resource)
-            .claim_component_royalty(component_address)
-            .call_method(
-                account,
-                "deposit_batch",
-                manifest_args!(ManifestExpression::EntireWorktop),
-            )
-            .build(),
-        vec![NonFungibleGlobalId::from_public_key(&public_key)],
-    );
-    receipt.expect_commit_success();
-
-    // Negative case
-    let receipt = test_runner.execute_manifest(
-        ManifestBuilder::new()
-            .lock_fee(account, 100.into())
-            .claim_component_royalty(component_address)
-            .call_method(
-                account,
-                "deposit_batch",
-                manifest_args!(ManifestExpression::EntireWorktop),
-            )
-            .build(),
-        vec![NonFungibleGlobalId::from_public_key(&public_key)],
-    );
-    receipt.expect_commit_failure();
 }

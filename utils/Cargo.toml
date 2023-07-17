@@ -1,6 +1,6 @@
 [package]
 name = "utils"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 
 [dependencies]
@@ -17,6 +17,9 @@ default = ["std"]
 std = ["indexmap/std"]
 alloc = ["hashbrown"]
 serde = ["serde/derive"]
+# This flag is set by fuzz-tests framework and it enables StubHasher (instead of RandomHasher) for
+# Map and Set structs to prevent non-determinism when fuzzing.
+radix_engine_fuzzing= []
 
 [lib]
 bench = false

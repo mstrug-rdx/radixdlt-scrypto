@@ -4,10 +4,9 @@
 //! builder that is being used.
 
 use radix_engine::types::*;
-use radix_engine_interface::schema::BlueprintSchema;
+use transaction::builder::ManifestBuilder;
 use transaction::data::{from_decimal, from_non_fungible_local_id, from_precise_decimal};
-use transaction::model::Instruction;
-use transaction::{builder::ManifestBuilder, data::from_address};
+use transaction::model::InstructionV1;
 
 use super::{parse_resource_specifier, ResourceSpecifier};
 
@@ -37,8 +36,8 @@ pub enum BuildCallInstructionError {
 #[derive(Debug, Clone)]
 pub enum BuildCallArgumentsError {
     WrongNumberOfArguments(usize, usize),
-
     BuildCallArgumentError(BuildCallArgumentError),
+    RustToManifestValueError(RustToManifestValueError),
 }
 
 /// Represents an error when parsing an argument.
@@ -66,104 +65,38 @@ impl From<BuildCallArgumentError> for BuildCallArgumentsError {
     }
 }
 
-/// Calls a function.
-///
-/// The implementation will automatically prepare the arguments based on the
-/// function SCHEMA, including resource buckets and proofs.
-///
-/// If an Account component address is provided, resources will be withdrawn from the given account;
-/// otherwise, they will be taken from transaction worktop.
-pub fn add_call_function_instruction_with_schema<'a>(
-    builder: &'a mut ManifestBuilder,
-    bech32_decoder: &Bech32Decoder,
-    package_address: PackageAddress,
-    blueprint_name: &str,
-    function: &str,
-    args: Vec<String>,
-    account: Option<ComponentAddress>,
-    blueprint_schema: &BlueprintSchema,
-) -> Result<&'a mut ManifestBuilder, BuildCallInstructionError> {
-    let function_schema = blueprint_schema
-        .find_function(function)
-        .ok_or_else(|| BuildCallInstructionError::FunctionNotFound(function.to_owned()))?;
-
-    let (builder, built_args) = build_call_arguments(
-        builder,
-        bech32_decoder,
-        &blueprint_schema.schema,
-        function_schema.input,
-        args,
-        account,
-    )?;
-
-    builder.add_instruction(Instruction::CallFunction {
-        package_address,
-        blueprint_name: blueprint_name.to_string(),
-        function_name: function.to_string(),
-        args: built_args,
-    });
-    Ok(builder)
-}
-
-/// Calls a method.
-///
-/// The implementation will automatically prepare the arguments based on the
-/// method SCHEMA, including resource buckets and proofs.
-///
-/// If an Account component address is provided, resources will be withdrawn from the given account;
-/// otherwise, they will be taken from transaction worktop.
-pub fn add_call_method_instruction_with_schema<'a>(
-    builder: &'a mut ManifestBuilder,
-    bech32_decoder: &Bech32Decoder,
-    component_address: ComponentAddress,
-    method_name: &str,
-    args: Vec<String>,
-    account: Option<ComponentAddress>,
-    blueprint_schema: &BlueprintSchema,
-) -> Result<&'a mut ManifestBuilder, BuildCallInstructionError> {
-    let function_schema = blueprint_schema
-        .find_method(method_name)
-        .ok_or_else(|| BuildCallInstructionError::MethodNotFound(method_name.to_owned()))?;
-
-    let (builder, built_args) = build_call_arguments(
-        builder,
-        bech32_decoder,
-        &blueprint_schema.schema,
-        function_schema.input,
-        args,
-        account,
-    )?;
-
-    builder.add_instruction(Instruction::CallMethod {
-        component_address,
-        method_name: method_name.to_owned(),
-        args: built_args,
-    });
-    Ok(builder)
+impl From<RustToManifestValueError> for BuildCallArgumentsError {
+    fn from(error: RustToManifestValueError) -> Self {
+        Self::RustToManifestValueError(error)
+    }
 }
 
 /// Creates resource proof from an account.
 pub fn create_proof_from_account<'a>(
     builder: &'a mut ManifestBuilder,
-    bech32_decoder: &Bech32Decoder,
+    address_bech32_decoder: &AddressBech32Decoder,
     account: ComponentAddress,
     resource_specifier: String,
 ) -> Result<&'a mut ManifestBuilder, BuildCallArgumentError> {
-    let resource_specifier = parse_resource_specifier(&resource_specifier, bech32_decoder)
+    let resource_specifier = parse_resource_specifier(&resource_specifier, address_bech32_decoder)
         .map_err(|_| BuildCallArgumentError::InvalidResourceSpecifier(resource_specifier))?;
     let builder = match resource_specifier {
         ResourceSpecifier::Amount(amount, resource_address) => {
-            builder.create_proof_from_account_by_amount(account, resource_address, amount)
+            builder.create_proof_from_account_of_amount(account, resource_address, amount)
         }
         ResourceSpecifier::Ids(non_fungible_local_ids, resource_address) => builder
-            .create_proof_from_account_by_ids(account, resource_address, &non_fungible_local_ids),
+            .create_proof_from_account_of_non_fungibles(
+                account,
+                resource_address,
+                &non_fungible_local_ids,
+            ),
     };
     Ok(builder)
 }
 
-fn build_call_arguments<'a>(
+pub fn build_call_arguments<'a>(
     mut builder: &'a mut ManifestBuilder,
-    bech32_decoder: &Bech32Decoder,
+    address_bech32_decoder: &AddressBech32Decoder,
     schema: &ScryptoSchema,
     type_index: LocalTypeIndex,
     args: Vec<String>,
@@ -182,8 +115,11 @@ fn build_call_arguments<'a>(
             for (i, f) in field_types.iter().enumerate() {
                 let tuple = build_call_argument(
                     builder,
-                    bech32_decoder,
+                    address_bech32_decoder,
                     schema.resolve_type_kind(*f).expect("Inconsistent schema"),
+                    schema
+                        .resolve_type_validation(*f)
+                        .expect("Inconsistent schema"),
                     args[i].clone(),
                     account,
                 )?;
@@ -193,11 +129,8 @@ fn build_call_arguments<'a>(
         }
         _ => panic!("Inconsistent schema"),
     }
-
-    Ok((
-        builder,
-        to_manifest_value(&ManifestValue::Tuple { fields: built_args }),
-    ))
+    let manifest_value = to_manifest_value(&ManifestValue::Tuple { fields: built_args })?;
+    Ok((builder, manifest_value))
 }
 
 macro_rules! parse_basic_type {
@@ -215,8 +148,9 @@ macro_rules! parse_basic_type {
 
 fn build_call_argument<'a>(
     builder: &'a mut ManifestBuilder,
-    bech32_decoder: &Bech32Decoder,
+    address_bech32_decoder: &AddressBech32Decoder,
     type_kind: &ScryptoTypeKind<LocalTypeIndex>,
+    type_validation: &TypeValidation<ScryptoCustomTypeValidation>,
     argument: String,
     account: Option<ComponentAddress>,
 ) -> Result<(&'a mut ManifestBuilder, ManifestValue), BuildCallArgumentError> {
@@ -263,41 +197,64 @@ fn build_call_argument<'a>(
                 )),
             },
         )),
-        ScryptoTypeKind::Custom(ScryptoCustomTypeKind::PackageAddress) => {
-            let value = bech32_decoder
-                .validate_and_decode_package_address(&argument)
-                .map_err(|_| BuildCallArgumentError::FailedToParse(argument))?;
+        ScryptoTypeKind::Custom(ScryptoCustomTypeKind::Reference)
+            if matches!(
+                type_validation,
+                TypeValidation::Custom(ScryptoCustomTypeValidation::Reference(
+                    ReferenceValidation::IsGlobalPackage
+                ))
+            ) =>
+        {
+            let value = PackageAddress::try_from_bech32(&address_bech32_decoder, &argument)
+                .ok_or(BuildCallArgumentError::FailedToParse(argument))?;
             Ok((
                 builder,
                 ManifestValue::Custom {
-                    value: ManifestCustomValue::Address(from_address(value.into())),
+                    value: ManifestCustomValue::Address(value.into()),
                 },
             ))
         }
-        ScryptoTypeKind::Custom(ScryptoCustomTypeKind::ComponentAddress) => {
-            let value = bech32_decoder
-                .validate_and_decode_component_address(&argument)
-                .map_err(|_| BuildCallArgumentError::FailedToParse(argument))?;
+        ScryptoTypeKind::Custom(ScryptoCustomTypeKind::Reference)
+            if matches!(
+                type_validation,
+                TypeValidation::Custom(ScryptoCustomTypeValidation::Reference(
+                    ReferenceValidation::IsGlobalComponent
+                ))
+            ) =>
+        {
+            let value = ComponentAddress::try_from_bech32(&address_bech32_decoder, &argument)
+                .ok_or(BuildCallArgumentError::FailedToParse(argument))?;
             Ok((
                 builder,
                 ManifestValue::Custom {
-                    value: ManifestCustomValue::Address(from_address(value.into())),
+                    value: ManifestCustomValue::Address(value.into()),
                 },
             ))
         }
-        ScryptoTypeKind::Custom(ScryptoCustomTypeKind::ResourceAddress) => {
-            let value = bech32_decoder
-                .validate_and_decode_resource_address(&argument)
-                .map_err(|_| BuildCallArgumentError::FailedToParse(argument))?;
+        ScryptoTypeKind::Custom(ScryptoCustomTypeKind::Reference)
+            if matches!(
+                type_validation,
+                TypeValidation::Custom(ScryptoCustomTypeValidation::Reference(
+                    ReferenceValidation::IsGlobalResourceManager
+                ))
+            ) =>
+        {
+            let value = ResourceAddress::try_from_bech32(&address_bech32_decoder, &argument)
+                .ok_or(BuildCallArgumentError::FailedToParse(argument))?;
             Ok((
                 builder,
                 ManifestValue::Custom {
-                    value: ManifestCustomValue::Address(from_address(value.into())),
+                    value: ManifestCustomValue::Address(value.into()),
                 },
             ))
         }
-        ScryptoTypeKind::Custom(ScryptoCustomTypeKind::Bucket) => {
-            let resource_specifier = parse_resource_specifier(&argument, bech32_decoder)
+        ScryptoTypeKind::Custom(ScryptoCustomTypeKind::Own)
+            if matches!(
+                type_validation,
+                TypeValidation::Custom(ScryptoCustomTypeValidation::Own(OwnValidation::IsBucket))
+            ) =>
+        {
+            let resource_specifier = parse_resource_specifier(&argument, address_bech32_decoder)
                 .map_err(|_| BuildCallArgumentError::FailedToParse(argument))?;
             let bucket_id = match resource_specifier {
                 ResourceSpecifier::Amount(amount, resource_address) => {
@@ -305,7 +262,7 @@ fn build_call_argument<'a>(
                         builder.withdraw_from_account(account, resource_address, amount);
                     }
                     builder
-                        .add_instruction(Instruction::TakeFromWorktopByAmount {
+                        .add_instruction(InstructionV1::TakeFromWorktop {
                             amount,
                             resource_address,
                         })
@@ -321,8 +278,8 @@ fn build_call_argument<'a>(
                         );
                     }
                     builder
-                        .add_instruction(Instruction::TakeFromWorktopByIds {
-                            ids,
+                        .add_instruction(InstructionV1::TakeNonFungiblesFromWorktop {
+                            ids: ids.into_iter().collect(),
                             resource_address,
                         })
                         .1
@@ -336,19 +293,24 @@ fn build_call_argument<'a>(
                 },
             ))
         }
-        ScryptoTypeKind::Custom(ScryptoCustomTypeKind::Proof) => {
-            let resource_specifier = parse_resource_specifier(&argument, bech32_decoder)
+        ScryptoTypeKind::Custom(ScryptoCustomTypeKind::Own)
+            if matches!(
+                type_validation,
+                TypeValidation::Custom(ScryptoCustomTypeValidation::Own(OwnValidation::IsProof))
+            ) =>
+        {
+            let resource_specifier = parse_resource_specifier(&argument, address_bech32_decoder)
                 .map_err(|_| BuildCallArgumentError::FailedToParse(argument))?;
             let proof_id = match resource_specifier {
                 ResourceSpecifier::Amount(amount, resource_address) => {
                     if let Some(account) = account {
-                        builder.create_proof_from_account_by_amount(
+                        builder.create_proof_from_account_of_amount(
                             account,
                             resource_address,
                             amount,
                         );
                         builder
-                            .add_instruction(Instruction::PopFromAuthZone)
+                            .add_instruction(InstructionV1::PopFromAuthZone)
                             .2
                             .unwrap()
                     } else {
@@ -357,9 +319,13 @@ fn build_call_argument<'a>(
                 }
                 ResourceSpecifier::Ids(ids, resource_address) => {
                     if let Some(account) = account {
-                        builder.create_proof_from_account_by_ids(account, resource_address, &ids);
+                        builder.create_proof_from_account_of_non_fungibles(
+                            account,
+                            resource_address,
+                            &ids,
+                        );
                         builder
-                            .add_instruction(Instruction::PopFromAuthZone)
+                            .add_instruction(InstructionV1::PopFromAuthZone)
                             .2
                             .unwrap()
                     } else {
@@ -387,10 +353,11 @@ mod test {
     pub fn parsing_of_u8_succeeds() {
         // Arrange
         let arg = "12";
-        let arg_type = ScryptoTypeKind::U8;
+        let type_kind = ScryptoTypeKind::U8;
 
         // Act
-        let parsed_arg: u8 = build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+        let parsed_arg: u8 = build_and_decode_arg(arg, type_kind, TypeValidation::None)
+            .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, 12u8)
@@ -400,10 +367,11 @@ mod test {
     pub fn parsing_of_u16_succeeds() {
         // Arrange
         let arg = "12";
-        let arg_type = ScryptoTypeKind::U16;
+        let type_kind = ScryptoTypeKind::U16;
 
         // Act
-        let parsed_arg: u16 = build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+        let parsed_arg: u16 = build_and_decode_arg(arg, type_kind, TypeValidation::None)
+            .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, 12u16)
@@ -413,10 +381,11 @@ mod test {
     pub fn parsing_of_u32_succeeds() {
         // Arrange
         let arg = "12";
-        let arg_type = ScryptoTypeKind::U32;
+        let type_kind = ScryptoTypeKind::U32;
 
         // Act
-        let parsed_arg: u32 = build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+        let parsed_arg: u32 = build_and_decode_arg(arg, type_kind, TypeValidation::None)
+            .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, 12u32)
@@ -426,10 +395,11 @@ mod test {
     pub fn parsing_of_u64_succeeds() {
         // Arrange
         let arg = "12";
-        let arg_type = ScryptoTypeKind::U64;
+        let type_kind = ScryptoTypeKind::U64;
 
         // Act
-        let parsed_arg: u64 = build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+        let parsed_arg: u64 = build_and_decode_arg(arg, type_kind, TypeValidation::None)
+            .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, 12u64)
@@ -439,10 +409,11 @@ mod test {
     pub fn parsing_of_u128_succeeds() {
         // Arrange
         let arg = "12";
-        let arg_type = ScryptoTypeKind::U128;
+        let type_kind = ScryptoTypeKind::U128;
 
         // Act
-        let parsed_arg: u128 = build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+        let parsed_arg: u128 = build_and_decode_arg(arg, type_kind, TypeValidation::None)
+            .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, 12u128)
@@ -452,10 +423,11 @@ mod test {
     pub fn parsing_of_i8_succeeds() {
         // Arrange
         let arg = "12";
-        let arg_type = ScryptoTypeKind::I8;
+        let type_kind = ScryptoTypeKind::I8;
 
         // Act
-        let parsed_arg: i8 = build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+        let parsed_arg: i8 = build_and_decode_arg(arg, type_kind, TypeValidation::None)
+            .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, 12i8)
@@ -465,10 +437,11 @@ mod test {
     pub fn parsing_of_i16_succeeds() {
         // Arrange
         let arg = "12";
-        let arg_type = ScryptoTypeKind::I16;
+        let type_kind = ScryptoTypeKind::I16;
 
         // Act
-        let parsed_arg: i16 = build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+        let parsed_arg: i16 = build_and_decode_arg(arg, type_kind, TypeValidation::None)
+            .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, 12i16)
@@ -478,10 +451,11 @@ mod test {
     pub fn parsing_of_i32_succeeds() {
         // Arrange
         let arg = "12";
-        let arg_type = ScryptoTypeKind::I32;
+        let type_kind = ScryptoTypeKind::I32;
 
         // Act
-        let parsed_arg: i32 = build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+        let parsed_arg: i32 = build_and_decode_arg(arg, type_kind, TypeValidation::None)
+            .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, 12i32)
@@ -491,10 +465,11 @@ mod test {
     pub fn parsing_of_i64_succeeds() {
         // Arrange
         let arg = "12";
-        let arg_type = ScryptoTypeKind::I64;
+        let type_kind = ScryptoTypeKind::I64;
 
         // Act
-        let parsed_arg: i64 = build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+        let parsed_arg: i64 = build_and_decode_arg(arg, type_kind, TypeValidation::None)
+            .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, 12i64)
@@ -504,10 +479,11 @@ mod test {
     pub fn parsing_of_i128_succeeds() {
         // Arrange
         let arg = "12";
-        let arg_type = ScryptoTypeKind::I128;
+        let type_kind = ScryptoTypeKind::I128;
 
         // Act
-        let parsed_arg: i128 = build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+        let parsed_arg: i128 = build_and_decode_arg(arg, type_kind, TypeValidation::None)
+            .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, 12i128)
@@ -517,10 +493,11 @@ mod test {
     pub fn parsing_of_decimal_succeeds() {
         // Arrange
         let arg = "12";
-        let arg_type = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::Decimal);
+        let type_kind = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::Decimal);
 
         // Act
-        let parsed_arg: Decimal = build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+        let parsed_arg: Decimal = build_and_decode_arg(arg, type_kind, TypeValidation::None)
+            .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, Decimal::from_str("12").unwrap())
@@ -529,15 +506,19 @@ mod test {
     #[test]
     pub fn parsing_of_component_address_succeeds() {
         // Arrange
-        let component_address = ComponentAddress::Account([1u8; 26]);
+        let component_address = component_address(EntityType::GlobalAccount, 5);
 
-        let arg =
-            Bech32Encoder::for_simulator().encode_component_address_to_string(&component_address);
-        let arg_type = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::ComponentAddress);
+        let arg = AddressBech32Encoder::for_simulator()
+            .encode(component_address.as_ref())
+            .unwrap();
+        let type_kind = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::Reference);
+        let type_validation = TypeValidation::Custom(ScryptoCustomTypeValidation::Reference(
+            ReferenceValidation::IsGlobalComponent,
+        ));
 
         // Act
         let parsed_arg: ComponentAddress =
-            build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+            build_and_decode_arg(arg, type_kind, type_validation).expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, component_address)
@@ -546,14 +527,19 @@ mod test {
     #[test]
     pub fn parsing_of_package_address_succeeds() {
         // Arrange
-        let package_address = PackageAddress::Normal([1u8; 26]);
+        let package_address = package_address(EntityType::GlobalPackage, 5);
 
-        let arg = Bech32Encoder::for_simulator().encode_package_address_to_string(&package_address);
-        let arg_type = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::PackageAddress);
+        let arg = AddressBech32Encoder::for_simulator()
+            .encode(package_address.as_ref())
+            .unwrap();
+        let type_kind = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::Reference);
+        let type_validation = TypeValidation::Custom(ScryptoCustomTypeValidation::Reference(
+            ReferenceValidation::IsGlobalPackage,
+        ));
 
         // Act
         let parsed_arg: PackageAddress =
-            build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+            build_and_decode_arg(arg, type_kind, type_validation).expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, package_address)
@@ -562,15 +548,19 @@ mod test {
     #[test]
     pub fn parsing_of_resource_address_succeeds() {
         // Arrange
-        let resource_address = ResourceAddress::Fungible([1u8; 26]);
+        let resource_address = resource_address(EntityType::GlobalFungibleResourceManager, 5);
 
-        let arg =
-            Bech32Encoder::for_simulator().encode_resource_address_to_string(&resource_address);
-        let arg_type = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::ResourceAddress);
+        let arg = AddressBech32Encoder::for_simulator()
+            .encode(resource_address.as_ref())
+            .unwrap();
+        let type_kind = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::Reference);
+        let type_validation = TypeValidation::Custom(ScryptoCustomTypeValidation::Reference(
+            ReferenceValidation::IsGlobalResourceManager,
+        ));
 
         // Act
         let parsed_arg: ResourceAddress =
-            build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+            build_and_decode_arg(arg, type_kind, type_validation).expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, resource_address)
@@ -580,11 +570,11 @@ mod test {
     pub fn parsing_of_precise_decimal_succeeds() {
         // Arrange
         let arg = "12";
-        let arg_type = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::PreciseDecimal);
+        let type_kind = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::PreciseDecimal);
 
         // Act
-        let parsed_arg: PreciseDecimal =
-            build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+        let parsed_arg: PreciseDecimal = build_and_decode_arg(arg, type_kind, TypeValidation::None)
+            .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, PreciseDecimal::from_str("12").unwrap())
@@ -594,11 +584,12 @@ mod test {
     pub fn parsing_of_string_non_fungible_local_id_succeeds() {
         // Arrange
         let arg = "<HelloWorld>";
-        let arg_type = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::NonFungibleLocalId);
+        let type_kind = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::NonFungibleLocalId);
 
         // Act
         let parsed_arg: NonFungibleLocalId =
-            build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+            build_and_decode_arg(arg, type_kind, TypeValidation::None)
+                .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(
@@ -611,11 +602,12 @@ mod test {
     pub fn parsing_of_bytes_non_fungible_local_id_succeeds() {
         // Arrange
         let arg = "[c41fa9ef2ab31f5db2614c1c4c626e9c279349b240af7cb939ead29058fdff2c]";
-        let arg_type = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::NonFungibleLocalId);
+        let type_kind = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::NonFungibleLocalId);
 
         // Act
         let parsed_arg: NonFungibleLocalId =
-            build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+            build_and_decode_arg(arg, type_kind, TypeValidation::None)
+                .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(
@@ -632,41 +624,49 @@ mod test {
     pub fn parsing_of_u64_non_fungible_local_id_succeeds() {
         // Arrange
         let arg = "#12#";
-        let arg_type = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::NonFungibleLocalId);
+        let type_kind = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::NonFungibleLocalId);
 
         // Act
         let parsed_arg: NonFungibleLocalId =
-            build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+            build_and_decode_arg(arg, type_kind, TypeValidation::None)
+                .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(parsed_arg, NonFungibleLocalId::integer(12))
     }
 
     #[test]
-    pub fn parsing_of_uuid_non_fungible_local_id_succeeds() {
+    pub fn parsing_of_ruid_non_fungible_local_id_succeeds() {
         // Arrange
-        let arg = "{f7223dbc-bbd6-4769-8d6f-effce550080d}";
-        let arg_type = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::NonFungibleLocalId);
+        let arg = "{1111111111111111-2222222222222222-3333333333333333-4444444444444444}";
+        let type_kind = ScryptoTypeKind::Custom(ScryptoCustomTypeKind::NonFungibleLocalId);
 
         // Act
         let parsed_arg: NonFungibleLocalId =
-            build_and_decode_arg(arg, arg_type).expect("Failed to parse arg");
+            build_and_decode_arg(arg, type_kind, TypeValidation::None)
+                .expect("Failed to parse arg");
 
         // Assert
         assert_eq!(
             parsed_arg,
-            NonFungibleLocalId::uuid(0xf7223dbc_bbd6_4769_8d6f_effce550080d).unwrap()
+            NonFungibleLocalId::ruid([
+                0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+                0x22, 0x22, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x44, 0x44, 0x44, 0x44,
+                0x44, 0x44, 0x44, 0x44,
+            ])
         )
     }
 
     pub fn build_and_decode_arg<S: AsRef<str>, T: ManifestDecode>(
         arg: S,
-        arg_type: ScryptoTypeKind<LocalTypeIndex>,
+        type_kind: ScryptoTypeKind<LocalTypeIndex>,
+        type_validation: TypeValidation<ScryptoCustomTypeValidation>,
     ) -> Result<T, BuildAndDecodeArgError> {
         let (_, built_arg) = build_call_argument(
             &mut ManifestBuilder::new(),
-            &Bech32Decoder::for_simulator(),
-            &arg_type,
+            &AddressBech32Decoder::for_simulator(),
+            &type_kind,
+            &type_validation,
             arg.as_ref().to_owned(),
             None,
         )

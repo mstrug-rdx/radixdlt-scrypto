@@ -1,226 +1,282 @@
 use crate::blueprints::resource::WorktopSubstate;
 use crate::errors::ApplicationError;
-use crate::errors::InterpreterError;
 use crate::errors::RuntimeError;
-use crate::kernel::kernel_api::{KernelNodeApi, KernelSubstateApi};
-use crate::system::node::RENodeInit;
-use crate::system::node::RENodeModuleInit;
+use crate::kernel::kernel_api::KernelNodeApi;
+use crate::kernel::kernel_api::KernelSubstateApi;
+use crate::system::node_init::type_info_partition;
+use crate::system::node_modules::type_info::TypeInfoBlueprint;
 use crate::system::node_modules::type_info::TypeInfoSubstate;
-use crate::system::node_substates::RuntimeSubstate;
 use crate::types::*;
-use native_sdk::resource::{ComponentAuthZone, SysBucket, SysProof, Worktop};
-use native_sdk::runtime::Runtime;
-use radix_engine_interface::api::node_modules::auth::{
-    AccessRulesSetMethodAccessRuleInput, ACCESS_RULES_SET_METHOD_ACCESS_RULE_IDENT,
-};
-use radix_engine_interface::api::node_modules::metadata::{
-    MetadataRemoveInput, MetadataSetInput, METADATA_REMOVE_IDENT, METADATA_SET_IDENT,
-};
-use radix_engine_interface::api::node_modules::royalty::{
-    ComponentClaimRoyaltyInput, ComponentSetRoyaltyConfigInput,
-    COMPONENT_ROYALTY_CLAIM_ROYALTY_IDENT, COMPONENT_ROYALTY_SET_ROYALTY_CONFIG_IDENT,
-};
+use native_sdk::resource::NativeNonFungibleBucket;
+use native_sdk::resource::{NativeBucket, NativeProof, Worktop};
+use native_sdk::runtime::LocalAuthZone;
+use radix_engine_interface::api::object_api::ObjectModuleId;
 use radix_engine_interface::api::ClientApi;
-use radix_engine_interface::api::ClientObjectApi;
-use radix_engine_interface::blueprints::package::*;
+use radix_engine_interface::blueprints::package::BlueprintVersion;
 use radix_engine_interface::blueprints::resource::*;
-use radix_engine_interface::blueprints::transaction_processor::InstructionOutput;
 use radix_engine_interface::blueprints::transaction_processor::*;
-use radix_engine_interface::schema::PackageSchema;
-use transaction::data::to_address;
+use sbor::rust::prelude::*;
 use transaction::data::transform;
 use transaction::data::TransformHandler;
-use transaction::errors::ManifestIdAllocationError;
 use transaction::model::*;
 use transaction::validation::*;
+
+#[derive(Debug, Eq, PartialEq, ScryptoSbor)]
+pub struct TransactionProcessorRunInput {
+    pub manifest_encoded_instructions: Vec<u8>,
+    pub global_address_reservations: Vec<GlobalAddressReservation>,
+    pub references: Vec<Reference>, // Required so that the kernel passes the references to the processor frame
+    pub blobs: IndexMap<Hash, Vec<u8>>,
+}
+
+// This needs to match the above, but is easily encodable to avoid cloning from the transaction payload to encode
+#[derive(Debug, Eq, PartialEq, ScryptoEncode)]
+pub struct TransactionProcessorRunInputEfficientEncodable<'a> {
+    pub manifest_encoded_instructions: &'a [u8],
+    pub global_address_reservations: Vec<GlobalAddressReservation>,
+    pub references: &'a IndexSet<Reference>,
+    pub blobs: &'a IndexMap<Hash, Vec<u8>>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, ScryptoSbor)]
 pub enum TransactionProcessorError {
     TransactionEpochNotYetValid {
-        valid_from: u64,
-        current_epoch: u64,
+        valid_from: Epoch,
+        current_epoch: Epoch,
     },
     TransactionEpochNoLongerValid {
-        valid_until: u64,
-        current_epoch: u64,
+        valid_until: Epoch,
+        current_epoch: Epoch,
     },
     BucketNotFound(u32),
     ProofNotFound(u32),
+    AddressReservationNotFound(u32),
+    AddressNotFound(u32),
     BlobNotFound(Hash),
-    IdAllocationError(ManifestIdAllocationError),
     InvalidCallData(DecodeError),
     InvalidPackageSchema(DecodeError),
+    NotPackageAddress(NodeId),
+    NotGlobalAddress(NodeId),
 }
 
 pub struct TransactionProcessorBlueprint;
 
+macro_rules! handle_call_method {
+    ($module_id:expr, $node_id:expr, $direct_access:expr, $method_name:expr, $args:expr, $worktop:expr, $processor:expr, $api:expr) => {{
+        let mut processor_with_api = TransactionProcessorWithApi {
+            worktop: $worktop,
+            processor: $processor,
+            api: $api,
+        };
+        let scrypto_value = transform($args, &mut processor_with_api)?;
+        $processor = processor_with_api.processor;
+
+        let rtn = $api.call_method_advanced(
+            $node_id,
+            $direct_access,
+            $module_id,
+            &$method_name,
+            scrypto_encode(&scrypto_value).unwrap(),
+        )?;
+        let result = IndexedScryptoValue::from_vec(rtn).unwrap();
+        $processor.handle_call_return_data(&result, &$worktop, $api)?;
+        InstructionOutput::CallReturn(result.into())
+    }};
+}
+
 impl TransactionProcessorBlueprint {
-    pub(crate) fn run<Y>(
-        input: IndexedScryptoValue,
+    pub(crate) fn run<Y, L: Default>(
+        manifest_encoded_instructions: Vec<u8>,
+        global_address_reservations: Vec<GlobalAddressReservation>,
+        _references: Vec<Reference>, // Required so that the kernel passes the references to the processor frame
+        blobs: IndexMap<Hash, Vec<u8>>,
         api: &mut Y,
-    ) -> Result<IndexedScryptoValue, RuntimeError>
+    ) -> Result<Vec<InstructionOutput>, RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
+        Y: KernelNodeApi + KernelSubstateApi<L> + ClientApi<RuntimeError>,
     {
-        let input: TransactionProcessorRunInput = input.as_typed().map_err(|e| {
-            RuntimeError::InterpreterError(InterpreterError::ScryptoInputDecodeError(e))
-        })?;
-
-        // Runtime transaction validation
-        for request in input.runtime_validations.as_ref() {
-            TransactionProcessor::perform_validation(request, api)?;
-        }
-
         // Create a worktop
-        let worktop_node_id = api.kernel_allocate_node_id(AllocateEntityType::Object)?;
+        let worktop_node_id = api.kernel_allocate_node_id(EntityType::InternalGenericComponent)?;
         api.kernel_create_node(
             worktop_node_id,
-            RENodeInit::Object(btreemap!(
-                SubstateOffset::Worktop(WorktopOffset::Worktop) => RuntimeSubstate::Worktop(WorktopSubstate::new())
-            )),
             btreemap!(
-                NodeModuleId::TypeInfo => RENodeModuleInit::TypeInfo(TypeInfoSubstate::Object {
-                    package_address: RESOURCE_MANAGER_PACKAGE,
-                    blueprint_name: WORKTOP_BLUEPRINT.to_string(),
-                    global: false,
-                })
+                MAIN_BASE_PARTITION => btreemap!(
+                    WorktopField::Worktop.into() => IndexedScryptoValue::from_typed(&WorktopSubstate::new())
+                ),
+                TYPE_INFO_FIELD_PARTITION => type_info_partition(
+                    TypeInfoSubstate::Object(ObjectInfo {
+                        global: false,
+
+                        blueprint_id: BlueprintId::new(&RESOURCE_PACKAGE, WORKTOP_BLUEPRINT),
+                        version: BlueprintVersion::default(),
+
+                        instance_schema: None,
+                        blueprint_info: ObjectBlueprintInfo::default(),
+                        features: btreeset!(),
+                    })
+                )
             ),
         )?;
-        let worktop = Worktop(worktop_node_id.into());
-
-        // Decode instructions
-        let instructions: Vec<Instruction> = manifest_decode(&input.instructions).unwrap();
-
-        // Index blobs
-        // TODO: defer blob hashing to post fee payments as it's computationally costly
-        let mut blobs_by_hash = HashMap::new();
-        for blob in input.blobs.as_ref() {
-            blobs_by_hash.insert(hash(blob), blob);
-        }
-
-        let mut processor = TransactionProcessor::new(blobs_by_hash);
+        let worktop = Worktop(Own(worktop_node_id));
+        let instructions = manifest_decode::<Vec<InstructionV1>>(&manifest_encoded_instructions)
+            .map_err(|e| {
+                // This error should never occur if being called from root since this is constructed
+                // by the transaction executor. This error is more to protect against application
+                // space calling this function if/when possible
+                RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+            })?;
+        let mut processor = TransactionProcessor::new(blobs, global_address_reservations);
         let mut outputs = Vec::new();
         for (index, inst) in instructions.into_iter().enumerate() {
             api.update_instruction_index(index)?;
 
             let result = match inst {
-                Instruction::TakeFromWorktop { resource_address } => {
-                    let bucket = worktop.sys_take_all(resource_address, api)?;
+                InstructionV1::TakeAllFromWorktop { resource_address } => {
+                    let bucket = worktop.take_all(resource_address, api)?;
                     processor.create_manifest_bucket(bucket)?;
                     InstructionOutput::None
                 }
-                Instruction::TakeFromWorktopByAmount {
+                InstructionV1::TakeFromWorktop {
                     amount,
                     resource_address,
                 } => {
-                    let bucket = worktop.sys_take(resource_address, amount, api)?;
+                    let bucket = worktop.take(resource_address, amount, api)?;
                     processor.create_manifest_bucket(bucket)?;
                     InstructionOutput::None
                 }
-                Instruction::TakeFromWorktopByIds {
+                InstructionV1::TakeNonFungiblesFromWorktop {
                     ids,
                     resource_address,
                 } => {
-                    let bucket = worktop.sys_take_non_fungibles(resource_address, ids, api)?;
+                    let bucket = worktop.take_non_fungibles(
+                        resource_address,
+                        ids.into_iter().collect(),
+                        api,
+                    )?;
                     processor.create_manifest_bucket(bucket)?;
                     InstructionOutput::None
                 }
-                Instruction::ReturnToWorktop { bucket_id } => {
+                InstructionV1::ReturnToWorktop { bucket_id } => {
                     let bucket = processor.take_bucket(&bucket_id)?;
-                    worktop.sys_put(bucket, api)?;
+                    worktop.put(bucket, api)?;
                     InstructionOutput::None
                 }
-                Instruction::AssertWorktopContains { resource_address } => {
-                    worktop.sys_assert_contains(resource_address, api)?;
+                InstructionV1::AssertWorktopContainsAny { resource_address } => {
+                    worktop.assert_contains(resource_address, api)?;
                     InstructionOutput::None
                 }
-                Instruction::AssertWorktopContainsByAmount {
+                InstructionV1::AssertWorktopContains {
                     amount,
                     resource_address,
                 } => {
-                    worktop.sys_assert_contains_amount(resource_address, amount, api)?;
+                    worktop.assert_contains_amount(resource_address, amount, api)?;
                     InstructionOutput::None
                 }
-                Instruction::AssertWorktopContainsByIds {
+                InstructionV1::AssertWorktopContainsNonFungibles {
                     ids,
                     resource_address,
                 } => {
-                    worktop.sys_assert_contains_non_fungibles(resource_address, ids, api)?;
+                    worktop.assert_contains_non_fungibles(
+                        resource_address,
+                        ids.into_iter().collect(),
+                        api,
+                    )?;
                     InstructionOutput::None
                 }
-                Instruction::PopFromAuthZone {} => {
-                    let proof = ComponentAuthZone::sys_pop(api)?;
+                InstructionV1::PopFromAuthZone {} => {
+                    let proof = LocalAuthZone::pop(api)?;
                     processor.create_manifest_proof(proof)?;
                     InstructionOutput::None
                 }
-                Instruction::ClearAuthZone => {
-                    ComponentAuthZone::sys_clear(api)?;
+                InstructionV1::ClearAuthZone => {
+                    LocalAuthZone::clear(api)?;
                     InstructionOutput::None
                 }
-                Instruction::ClearSignatureProofs => {
-                    ComponentAuthZone::sys_clear_signature_proofs(api)?;
+                InstructionV1::ClearSignatureProofs => {
+                    LocalAuthZone::clear_signature_proofs(api)?;
                     InstructionOutput::None
                 }
-                Instruction::PushToAuthZone { proof_id } => {
+                InstructionV1::PushToAuthZone { proof_id } => {
                     let proof = processor.take_proof(&proof_id)?;
-                    ComponentAuthZone::sys_push(proof, api)?;
+                    LocalAuthZone::push(proof, api)?;
                     InstructionOutput::None
                 }
-                Instruction::CreateProofFromAuthZone { resource_address } => {
-                    let proof = ComponentAuthZone::sys_create_proof(resource_address, api)?;
+                InstructionV1::CreateProofFromAuthZone { resource_address } => {
+                    let proof = LocalAuthZone::create_proof(resource_address, api)?;
                     processor.create_manifest_proof(proof)?;
                     InstructionOutput::None
                 }
-                Instruction::CreateProofFromAuthZoneByAmount {
+                InstructionV1::CreateProofFromAuthZoneOfAmount {
                     amount,
                     resource_address,
                 } => {
-                    let proof = ComponentAuthZone::sys_create_proof_by_amount(
-                        amount,
+                    let proof =
+                        LocalAuthZone::create_proof_of_amount(amount, resource_address, api)?;
+                    processor.create_manifest_proof(proof)?;
+                    InstructionOutput::None
+                }
+                InstructionV1::CreateProofFromAuthZoneOfNonFungibles {
+                    ids,
+                    resource_address,
+                } => {
+                    let proof = LocalAuthZone::create_proof_of_non_fungibles(
+                        &ids.into_iter().collect(),
                         resource_address,
                         api,
                     )?;
                     processor.create_manifest_proof(proof)?;
                     InstructionOutput::None
                 }
-                Instruction::CreateProofFromAuthZoneByIds {
-                    ids,
-                    resource_address,
-                } => {
-                    let proof =
-                        ComponentAuthZone::sys_create_proof_by_ids(&ids, resource_address, api)?;
+                InstructionV1::CreateProofFromAuthZoneOfAll { resource_address } => {
+                    let proof = LocalAuthZone::create_proof_of_all(resource_address, api)?;
                     processor.create_manifest_proof(proof)?;
                     InstructionOutput::None
                 }
-                Instruction::CreateProofFromBucket { bucket_id } => {
+                InstructionV1::CreateProofFromBucket { bucket_id } => {
                     let bucket = processor.get_bucket(&bucket_id)?;
-                    let proof = bucket.sys_create_proof(api)?;
+                    let proof = bucket.create_proof(api)?;
                     processor.create_manifest_proof(proof)?;
                     InstructionOutput::None
                 }
-                Instruction::CloneProof { proof_id } => {
-                    let proof = processor.get_proof(&proof_id)?;
-                    let proof = proof.sys_clone(api)?;
+                InstructionV1::CreateProofFromBucketOfAmount { bucket_id, amount } => {
+                    let bucket = processor.get_bucket(&bucket_id)?;
+                    let proof = bucket.create_proof_of_amount(amount, api)?;
                     processor.create_manifest_proof(proof)?;
                     InstructionOutput::None
                 }
-                Instruction::DropProof { proof_id } => {
-                    let proof = processor.take_proof(&proof_id)?;
-                    proof.sys_drop(api)?;
+                InstructionV1::CreateProofFromBucketOfNonFungibles { bucket_id, ids } => {
+                    let bucket = processor.get_bucket(&bucket_id)?;
+                    let proof =
+                        bucket.create_proof_of_non_fungibles(ids.into_iter().collect(), api)?;
+                    processor.create_manifest_proof(proof)?;
                     InstructionOutput::None
                 }
-                Instruction::DropAllProofs => {
-                    // NB: the difference between DROP_ALL_PROOFS and CLEAR_AUTH_ZONE is that
-                    // the former will drop all named proofs before clearing the auth zone.
+                InstructionV1::CreateProofFromBucketOfAll { bucket_id } => {
+                    let bucket = processor.get_bucket(&bucket_id)?;
+                    let proof = bucket.create_proof_of_all(api)?;
+                    processor.create_manifest_proof(proof)?;
+                    InstructionOutput::None
+                }
+                InstructionV1::BurnResource { bucket_id } => {
+                    let bucket = processor.take_bucket(&bucket_id)?;
+                    let rtn = bucket.burn(api)?;
 
-                    for (_, real_id) in processor.proof_id_mapping.drain() {
-                        let proof = Proof(real_id);
-                        proof.sys_drop(api).map(|_| IndexedScryptoValue::unit())?;
-                    }
-                    ComponentAuthZone::sys_clear(api)?;
+                    let result = IndexedScryptoValue::from_typed(&rtn);
+                    processor.handle_call_return_data(&result, &worktop, api)?;
+                    InstructionOutput::CallReturn(result.into())
+                }
+                InstructionV1::CloneProof { proof_id } => {
+                    let proof = processor.get_proof(&proof_id)?;
+                    let proof = proof.clone(api)?;
+                    processor.create_manifest_proof(proof)?;
                     InstructionOutput::None
                 }
-                Instruction::CallFunction {
+                InstructionV1::DropProof { proof_id } => {
+                    let proof = processor.take_proof(&proof_id)?;
+                    proof.drop(api)?;
+                    InstructionOutput::None
+                }
+                InstructionV1::CallFunction {
                     package_address,
                     blueprint_name,
                     function_name,
@@ -234,6 +290,7 @@ impl TransactionProcessorBlueprint {
                     let scrypto_value = transform(args, &mut processor_with_api)?;
                     processor = processor_with_api.processor;
 
+                    let package_address = processor.resolve_package_address(package_address)?;
                     let rtn = api.call_function(
                         package_address,
                         &blueprint_name,
@@ -242,383 +299,187 @@ impl TransactionProcessorBlueprint {
                     )?;
 
                     let result = IndexedScryptoValue::from_vec(rtn).unwrap();
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result, &worktop, api,
-                    )?;
+                    processor.handle_call_return_data(&result, &worktop, api)?;
                     InstructionOutput::CallReturn(result.into())
                 }
-                Instruction::CallMethod {
-                    component_address,
+                InstructionV1::CallMethod {
+                    address,
                     method_name,
                     args,
                 } => {
-                    let mut processor_with_api = TransactionProcessorWithApi {
+                    let address = processor.resolve_global_address(address)?;
+                    handle_call_method!(
+                        ObjectModuleId::Main,
+                        address.as_node_id(),
+                        false,
+                        method_name,
+                        args,
                         worktop,
                         processor,
-                        api,
-                    };
-                    let scrypto_value = transform(args, &mut processor_with_api)?;
-                    processor = processor_with_api.processor;
-
-                    let rtn = api.call_method(
-                        RENodeId::GlobalObject(component_address.into()),
-                        &method_name,
-                        scrypto_encode(&scrypto_value).unwrap(),
-                    )?;
-                    let result = IndexedScryptoValue::from_vec(rtn).unwrap();
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result, &worktop, api,
-                    )?;
-                    InstructionOutput::CallReturn(result.into())
+                        api
+                    )
                 }
-                Instruction::PublishPackage {
-                    code,
-                    schema,
-                    royalty_config,
-                    metadata,
-                    access_rules,
-                } => {
-                    let code = processor.get_blob(&code)?;
-                    let schema = processor.get_blob(&schema)?;
-                    let schema = scrypto_decode::<PackageSchema>(schema).map_err(|e| {
-                        RuntimeError::ApplicationError(ApplicationError::TransactionProcessorError(
-                            TransactionProcessorError::InvalidPackageSchema(e),
-                        ))
-                    })?;
-
-                    // TODO: remove clone by allowing invocation to have references, like in TransactionProcessorRunInvocation.
-                    let result = api.call_function(
-                        PACKAGE_PACKAGE,
-                        PACKAGE_BLUEPRINT,
-                        PACKAGE_PUBLISH_WASM_IDENT,
-                        scrypto_encode(&PackagePublishWasmInput {
-                            package_address: None,
-                            code: code.clone(),
-                            schema: schema.clone(),
-                            access_rules: access_rules.clone(),
-                            royalty_config: royalty_config.clone(),
-                            metadata: metadata.clone(),
-                        })
-                        .unwrap(),
-                    )?;
-
-                    let result_indexed = IndexedScryptoValue::from_vec(result).unwrap();
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result_indexed,
-                        &worktop,
-                        api,
-                    )?;
-
-                    InstructionOutput::CallReturn(result_indexed.into())
-                }
-                Instruction::BurnResource { bucket_id } => {
-                    let bucket = processor.take_bucket(&bucket_id)?;
-                    let rtn = api.call_function(
-                        RESOURCE_MANAGER_PACKAGE,
-                        BUCKET_BLUEPRINT,
-                        BUCKET_BURN_IDENT,
-                        scrypto_encode(&BucketBurnInput { bucket }).unwrap(),
-                    )?;
-
-                    let result = IndexedScryptoValue::from_vec(rtn).unwrap();
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result, &worktop, api,
-                    )?;
-                    InstructionOutput::CallReturn(result.into())
-                }
-                Instruction::MintFungible {
-                    resource_address,
-                    amount,
-                } => {
-                    let rtn = api.call_method(
-                        RENodeId::GlobalObject(resource_address.into()),
-                        FUNGIBLE_RESOURCE_MANAGER_MINT_IDENT,
-                        scrypto_encode(&FungibleResourceManagerMintInput { amount }).unwrap(),
-                    )?;
-
-                    let result = IndexedScryptoValue::from_vec(rtn).unwrap();
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result, &worktop, api,
-                    )?;
-                    InstructionOutput::CallReturn(result.into())
-                }
-                Instruction::MintNonFungible {
-                    resource_address,
+                InstructionV1::CallRoyaltyMethod {
+                    address,
+                    method_name,
                     args,
                 } => {
-                    let mut processor_with_api = TransactionProcessorWithApi {
+                    let address = processor.resolve_global_address(address)?;
+                    handle_call_method!(
+                        ObjectModuleId::Royalty,
+                        address.as_node_id(),
+                        false,
+                        method_name,
+                        args,
                         worktop,
                         processor,
-                        api,
-                    };
-                    let scrypto_value = transform(args, &mut processor_with_api)?;
-                    processor = processor_with_api.processor;
-
-                    let rtn = api.call_method(
-                        RENodeId::GlobalObject(resource_address.into()),
-                        NON_FUNGIBLE_RESOURCE_MANAGER_MINT_IDENT,
-                        scrypto_encode(&scrypto_value).unwrap(),
-                    )?;
-                    let result = IndexedScryptoValue::from_vec(rtn).unwrap();
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result, &worktop, api,
-                    )?;
-                    InstructionOutput::CallReturn(result.into())
+                        api
+                    )
                 }
-                Instruction::MintUuidNonFungible {
-                    resource_address,
+                InstructionV1::CallMetadataMethod {
+                    address,
+                    method_name,
                     args,
                 } => {
-                    let mut processor_with_api = TransactionProcessorWithApi {
+                    let address = processor.resolve_global_address(address)?;
+                    handle_call_method!(
+                        ObjectModuleId::Metadata,
+                        address.as_node_id(),
+                        false,
+                        method_name,
+                        args,
                         worktop,
                         processor,
-                        api,
-                    };
-                    let scrypto_value = transform(args, &mut processor_with_api)?;
-                    processor = processor_with_api.processor;
-                    let rtn = api.call_method(
-                        RENodeId::GlobalObject(resource_address.into()),
-                        NON_FUNGIBLE_RESOURCE_MANAGER_MINT_UUID_IDENT,
-                        scrypto_encode(&scrypto_value).unwrap(),
-                    )?;
-
-                    let result = IndexedScryptoValue::from_vec(rtn).unwrap();
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result, &worktop, api,
-                    )?;
-                    InstructionOutput::CallReturn(result.into())
+                        api
+                    )
                 }
-                Instruction::RecallResource { vault_id, amount } => {
-                    let rtn = api.call_method(
-                        RENodeId::Object(vault_id),
-                        VAULT_RECALL_IDENT,
-                        scrypto_encode(&VaultRecallInput { amount }).unwrap(),
-                    )?;
-
-                    let result = IndexedScryptoValue::from_vec(rtn).unwrap();
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result, &worktop, api,
-                    )?;
-                    InstructionOutput::CallReturn(result.into())
-                }
-                Instruction::SetMetadata {
-                    entity_address,
-                    key,
-                    value,
+                InstructionV1::CallAccessRulesMethod {
+                    address,
+                    method_name,
+                    args,
                 } => {
-                    let address = to_address(entity_address);
-                    let receiver = address.into();
-                    let result = api.call_module_method(
-                        receiver,
-                        NodeModuleId::Metadata,
-                        METADATA_SET_IDENT,
-                        scrypto_encode(&MetadataSetInput {
-                            key: key.clone(),
-                            value: scrypto_decode(&scrypto_encode(&value).unwrap()).unwrap(),
-                        })
-                        .unwrap(),
-                    )?;
-
-                    let result_indexed = IndexedScryptoValue::from_vec(result).unwrap();
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result_indexed,
-                        &worktop,
-                        api,
-                    )?;
-
-                    InstructionOutput::CallReturn(result_indexed.into())
+                    let address = processor.resolve_global_address(address)?;
+                    handle_call_method!(
+                        ObjectModuleId::AccessRules,
+                        address.as_node_id(),
+                        false,
+                        method_name,
+                        args,
+                        worktop,
+                        processor,
+                        api
+                    )
                 }
-                Instruction::RemoveMetadata {
-                    entity_address,
-                    key,
+                InstructionV1::CallDirectVaultMethod {
+                    address,
+                    method_name,
+                    args,
                 } => {
-                    let address = to_address(entity_address);
-                    let receiver = address.into();
-                    let result = api.call_module_method(
-                        receiver,
-                        NodeModuleId::Metadata,
-                        METADATA_REMOVE_IDENT,
-                        scrypto_encode(&MetadataRemoveInput { key: key.clone() }).unwrap(),
-                    )?;
-
-                    let result_indexed = IndexedScryptoValue::from_vec(result).unwrap();
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result_indexed,
-                        &worktop,
-                        api,
-                    )?;
-
-                    InstructionOutput::CallReturn(result_indexed.into())
+                    handle_call_method!(
+                        ObjectModuleId::Main,
+                        address.as_node_id(),
+                        true,
+                        method_name,
+                        args,
+                        worktop,
+                        processor,
+                        api
+                    )
                 }
-                Instruction::SetPackageRoyaltyConfig {
+                InstructionV1::DropAllProofs => {
+                    // NB: the difference between DROP_ALL_PROOFS and CLEAR_AUTH_ZONE is that
+                    // the former will drop all named proofs before clearing the auth zone.
+
+                    for (_, real_id) in processor.proof_mapping.drain(..) {
+                        let proof = Proof(Own(real_id));
+                        proof.drop(api).map(|_| IndexedScryptoValue::unit())?;
+                    }
+                    LocalAuthZone::clear(api)?;
+                    InstructionOutput::None
+                }
+                InstructionV1::AllocateGlobalAddress {
                     package_address,
-                    royalty_config,
+                    blueprint_name,
                 } => {
-                    let result = api.call_module_method(
-                        RENodeId::GlobalObject(package_address.into()),
-                        NodeModuleId::SELF,
-                        PACKAGE_SET_ROYALTY_CONFIG_IDENT,
-                        scrypto_encode(&PackageSetRoyaltyConfigInput {
-                            royalty_config: royalty_config.clone(),
-                        })
-                        .unwrap(),
+                    let (address_reservation, address) = api.allocate_global_address(
+                        BlueprintId::new(&package_address, blueprint_name),
                     )?;
+                    processor.create_manifest_address_reservation(address_reservation)?;
+                    processor.create_manifest_address(address)?;
 
-                    let result_indexed = IndexedScryptoValue::from_vec(result).unwrap();
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result_indexed,
-                        &worktop,
-                        api,
-                    )?;
-
-                    InstructionOutput::CallReturn(result_indexed.into())
-                }
-                Instruction::SetComponentRoyaltyConfig {
-                    component_address,
-                    royalty_config,
-                } => {
-                    let result = api.call_module_method(
-                        RENodeId::GlobalObject(component_address.into()),
-                        NodeModuleId::ComponentRoyalty,
-                        COMPONENT_ROYALTY_SET_ROYALTY_CONFIG_IDENT,
-                        scrypto_encode(&ComponentSetRoyaltyConfigInput {
-                            royalty_config: royalty_config.clone(),
-                        })
-                        .unwrap(),
-                    )?;
-
-                    let result_indexed = IndexedScryptoValue::from_vec(result).unwrap();
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result_indexed,
-                        &worktop,
-                        api,
-                    )?;
-
-                    InstructionOutput::CallReturn(result_indexed.into())
-                }
-                Instruction::ClaimPackageRoyalty { package_address } => {
-                    let result = api.call_module_method(
-                        RENodeId::GlobalObject(package_address.into()),
-                        NodeModuleId::SELF,
-                        PACKAGE_CLAIM_ROYALTY_IDENT,
-                        scrypto_encode(&PackageClaimRoyaltyInput {}).unwrap(),
-                    )?;
-
-                    let result_indexed = IndexedScryptoValue::from_vec(result).unwrap();
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result_indexed,
-                        &worktop,
-                        api,
-                    )?;
-
-                    InstructionOutput::CallReturn(result_indexed.into())
-                }
-                Instruction::ClaimComponentRoyalty { component_address } => {
-                    let result = api.call_module_method(
-                        RENodeId::GlobalObject(component_address.into()),
-                        NodeModuleId::ComponentRoyalty,
-                        COMPONENT_ROYALTY_CLAIM_ROYALTY_IDENT,
-                        scrypto_encode(&ComponentClaimRoyaltyInput {}).unwrap(),
-                    )?;
-
-                    let result_indexed = IndexedScryptoValue::from_vec(result).unwrap();
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result_indexed,
-                        &worktop,
-                        api,
-                    )?;
-
-                    InstructionOutput::CallReturn(result_indexed.into())
-                }
-                Instruction::SetMethodAccessRule {
-                    entity_address,
-                    key,
-                    rule,
-                } => {
-                    let address = to_address(entity_address);
-                    let receiver = address.into();
-                    let result = api.call_module_method(
-                        receiver,
-                        NodeModuleId::AccessRules,
-                        ACCESS_RULES_SET_METHOD_ACCESS_RULE_IDENT,
-                        scrypto_encode(&AccessRulesSetMethodAccessRuleInput {
-                            key: key.clone(),
-                            rule: AccessRuleEntry::AccessRule(rule.clone()),
-                        })
-                        .unwrap(),
-                    )?;
-
-                    let result_indexed = IndexedScryptoValue::from_vec(result).unwrap();
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result_indexed,
-                        &worktop,
-                        api,
-                    )?;
-
-                    InstructionOutput::CallReturn(result_indexed.into())
-                }
-                Instruction::AssertAccessRule { access_rule } => {
-                    let rtn = ComponentAuthZone::sys_assert_access_rule(access_rule, api)?;
-
-                    let result = IndexedScryptoValue::from_typed(&rtn);
-                    TransactionProcessor::move_proofs_to_authzone_and_buckets_to_worktop(
-                        &result, &worktop, api,
-                    )?;
-                    InstructionOutput::CallReturn(result.into())
+                    InstructionOutput::None
                 }
             };
             outputs.push(result);
         }
 
-        worktop.sys_drop(api)?;
+        worktop.drop(api)?;
 
-        Ok(IndexedScryptoValue::from_typed(&outputs))
+        Ok(outputs)
     }
 }
 
-struct TransactionProcessor<'blob> {
-    proof_id_mapping: HashMap<ManifestProof, ObjectId>,
-    bucket_id_mapping: HashMap<ManifestBucket, ObjectId>,
+struct TransactionProcessor {
+    bucket_mapping: NonIterMap<ManifestBucket, NodeId>,
+    proof_mapping: IndexMap<ManifestProof, NodeId>,
+    address_reservation_mapping: NonIterMap<ManifestAddressReservation, NodeId>,
+    address_mapping: NonIterMap<u32, NodeId>,
     id_allocator: ManifestIdAllocator,
-    blobs_by_hash: HashMap<Hash, &'blob Vec<u8>>,
+    blobs_by_hash: IndexMap<Hash, Vec<u8>>,
 }
 
-impl<'blob> TransactionProcessor<'blob> {
-    fn new(blobs_by_hash: HashMap<Hash, &'blob Vec<u8>>) -> Self {
-        Self {
-            proof_id_mapping: HashMap::new(),
-            bucket_id_mapping: HashMap::new(),
-            id_allocator: ManifestIdAllocator::new(),
+impl TransactionProcessor {
+    fn new(
+        blobs_by_hash: IndexMap<Hash, Vec<u8>>,
+        global_address_reservations: Vec<GlobalAddressReservation>,
+    ) -> Self {
+        let mut processor = Self {
             blobs_by_hash,
+            proof_mapping: index_map_new(),
+            bucket_mapping: NonIterMap::new(),
+            address_reservation_mapping: NonIterMap::new(),
+            address_mapping: NonIterMap::new(),
+            id_allocator: ManifestIdAllocator::new(),
+        };
+
+        for address_reservation in global_address_reservations {
+            processor
+                .create_manifest_address_reservation(address_reservation)
+                .unwrap();
         }
+        processor
     }
 
     fn get_bucket(&mut self, bucket_id: &ManifestBucket) -> Result<Bucket, RuntimeError> {
-        let real_id = self.bucket_id_mapping.get(bucket_id).cloned().ok_or(
-            RuntimeError::ApplicationError(ApplicationError::TransactionProcessorError(
-                TransactionProcessorError::BucketNotFound(bucket_id.0),
-            )),
-        )?;
-        Ok(Bucket(real_id))
+        let real_id =
+            self.bucket_mapping
+                .get(bucket_id)
+                .cloned()
+                .ok_or(RuntimeError::ApplicationError(
+                    ApplicationError::TransactionProcessorError(
+                        TransactionProcessorError::BucketNotFound(bucket_id.0),
+                    ),
+                ))?;
+        Ok(Bucket(Own(real_id)))
     }
 
     fn take_bucket(&mut self, bucket_id: &ManifestBucket) -> Result<Bucket, RuntimeError> {
         let real_id =
-            self.bucket_id_mapping
+            self.bucket_mapping
                 .remove(bucket_id)
                 .ok_or(RuntimeError::ApplicationError(
                     ApplicationError::TransactionProcessorError(
                         TransactionProcessorError::BucketNotFound(bucket_id.0),
                     ),
                 ))?;
-        Ok(Bucket(real_id))
+        Ok(Bucket(Own(real_id)))
     }
 
-    fn get_blob(&mut self, blob_ref: &ManifestBlobRef) -> Result<&'blob Vec<u8>, RuntimeError> {
+    fn get_blob(&mut self, blob_ref: &ManifestBlobRef) -> Result<&[u8], RuntimeError> {
         let hash = Hash(blob_ref.0);
         self.blobs_by_hash
             .get(&hash)
-            .cloned()
+            .map(|x| x.as_ref())
             .ok_or(RuntimeError::ApplicationError(
                 ApplicationError::TransactionProcessorError(
                     TransactionProcessorError::BlobNotFound(hash),
@@ -628,7 +489,7 @@ impl<'blob> TransactionProcessor<'blob> {
 
     fn get_proof(&mut self, proof_id: &ManifestProof) -> Result<Proof, RuntimeError> {
         let real_id =
-            self.proof_id_mapping
+            self.proof_mapping
                 .get(proof_id)
                 .cloned()
                 .ok_or(RuntimeError::ApplicationError(
@@ -636,148 +497,196 @@ impl<'blob> TransactionProcessor<'blob> {
                         TransactionProcessorError::ProofNotFound(proof_id.0),
                     ),
                 ))?;
-        Ok(Proof(real_id))
+        Ok(Proof(Own(real_id)))
+    }
+
+    fn get_address(&mut self, address_id: &u32) -> Result<NodeId, RuntimeError> {
+        let real_id =
+            self.address_mapping
+                .get(address_id)
+                .cloned()
+                .ok_or(RuntimeError::ApplicationError(
+                    ApplicationError::TransactionProcessorError(
+                        TransactionProcessorError::AddressNotFound(*address_id),
+                    ),
+                ))?;
+        Ok(real_id)
     }
 
     fn take_proof(&mut self, proof_id: &ManifestProof) -> Result<Proof, RuntimeError> {
-        let real_id =
-            self.proof_id_mapping
-                .remove(proof_id)
-                .ok_or(RuntimeError::ApplicationError(
-                    ApplicationError::TransactionProcessorError(
-                        TransactionProcessorError::ProofNotFound(proof_id.0),
-                    ),
-                ))?;
-        Ok(Proof(real_id))
+        let real_id = self
+            .proof_mapping
+            .remove(proof_id)
+            .ok_or(RuntimeError::ApplicationError(
+                ApplicationError::TransactionProcessorError(
+                    TransactionProcessorError::ProofNotFound(proof_id.0),
+                ),
+            ))?;
+        Ok(Proof(Own(real_id)))
+    }
+
+    fn take_address_reservation(
+        &mut self,
+        address_reservation_id: &ManifestAddressReservation,
+    ) -> Result<GlobalAddressReservation, RuntimeError> {
+        let real_id = self
+            .address_reservation_mapping
+            .remove(address_reservation_id)
+            .ok_or(RuntimeError::ApplicationError(
+                ApplicationError::TransactionProcessorError(
+                    TransactionProcessorError::AddressReservationNotFound(address_reservation_id.0),
+                ),
+            ))?;
+        Ok(GlobalAddressReservation(Own(real_id)))
     }
 
     fn create_manifest_bucket(&mut self, bucket: Bucket) -> Result<ManifestBucket, RuntimeError> {
-        let new_id = self.id_allocator.new_bucket_id().map_err(|e| {
-            RuntimeError::ApplicationError(ApplicationError::TransactionProcessorError(
-                TransactionProcessorError::IdAllocationError(e),
-            ))
-        })?;
-        self.bucket_id_mapping.insert(new_id.clone(), bucket.0);
+        let new_id = self.id_allocator.new_bucket_id();
+        self.bucket_mapping.insert(new_id.clone(), bucket.0.into());
         Ok(new_id)
     }
 
     fn create_manifest_proof(&mut self, proof: Proof) -> Result<ManifestProof, RuntimeError> {
-        let new_id = self.id_allocator.new_proof_id().map_err(|e| {
-            RuntimeError::ApplicationError(ApplicationError::TransactionProcessorError(
-                TransactionProcessorError::IdAllocationError(e),
-            ))
-        })?;
-        self.proof_id_mapping.insert(new_id.clone(), proof.0);
+        let new_id = self.id_allocator.new_proof_id();
+        self.proof_mapping.insert(new_id.clone(), proof.0.into());
         Ok(new_id)
     }
 
-    fn move_proofs_to_authzone_and_buckets_to_worktop<Y>(
+    fn create_manifest_address_reservation(
+        &mut self,
+        address_reservation: GlobalAddressReservation,
+    ) -> Result<ManifestAddressReservation, RuntimeError> {
+        let new_id = self.id_allocator.new_address_reservation_id();
+        self.address_reservation_mapping
+            .insert(new_id, address_reservation.0.into());
+        Ok(new_id)
+    }
+
+    fn create_manifest_address(&mut self, address: GlobalAddress) -> Result<u32, RuntimeError> {
+        let new_id = self.id_allocator.new_address_id();
+        self.address_mapping.insert(new_id, address.into());
+        Ok(new_id)
+    }
+
+    fn resolve_package_address(
+        &mut self,
+        address: DynamicPackageAddress,
+    ) -> Result<PackageAddress, RuntimeError> {
+        match address {
+            DynamicPackageAddress::Static(address) => Ok(address),
+            DynamicPackageAddress::Named(name) => {
+                let node_id = self.get_address(&name)?;
+                PackageAddress::try_from(node_id.0).map_err(|_| {
+                    RuntimeError::ApplicationError(ApplicationError::TransactionProcessorError(
+                        TransactionProcessorError::NotPackageAddress(node_id),
+                    ))
+                })
+            }
+        }
+    }
+
+    fn resolve_global_address(
+        &mut self,
+        address: DynamicGlobalAddress,
+    ) -> Result<GlobalAddress, RuntimeError> {
+        match address {
+            DynamicGlobalAddress::Static(address) => Ok(address),
+            DynamicGlobalAddress::Named(name) => {
+                let node_id = self.get_address(&name)?;
+                GlobalAddress::try_from(node_id.0).map_err(|_| {
+                    RuntimeError::ApplicationError(ApplicationError::TransactionProcessorError(
+                        TransactionProcessorError::NotGlobalAddress(node_id),
+                    ))
+                })
+            }
+        }
+    }
+
+    fn handle_call_return_data<Y, L: Default>(
+        &mut self,
         value: &IndexedScryptoValue,
         worktop: &Worktop,
         api: &mut Y,
     ) -> Result<(), RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
+        Y: KernelNodeApi + KernelSubstateApi<L> + ClientApi<RuntimeError>,
     {
         // Auto move into worktop & auth_zone
-        for owned_node in value.owned_node_ids() {
-            let (package_address, blueprint) = api.get_object_type_info(*owned_node)?;
-            match (package_address, blueprint.as_str()) {
-                (RESOURCE_MANAGER_PACKAGE, BUCKET_BLUEPRINT) => {
-                    let bucket = Bucket(owned_node.clone().into());
-                    worktop.sys_put(bucket, api)?;
+        for node_id in value.owned_nodes() {
+            let info = TypeInfoBlueprint::get_type(node_id, api)?;
+            match info {
+                TypeInfoSubstate::Object(info) => match (
+                    info.blueprint_id.package_address,
+                    info.blueprint_id.blueprint_name.as_str(),
+                ) {
+                    (RESOURCE_PACKAGE, FUNGIBLE_BUCKET_BLUEPRINT)
+                    | (RESOURCE_PACKAGE, NON_FUNGIBLE_BUCKET_BLUEPRINT) => {
+                        let bucket = Bucket(Own(node_id.clone()));
+                        worktop.put(bucket, api)?;
+                    }
+                    (RESOURCE_PACKAGE, FUNGIBLE_PROOF_BLUEPRINT)
+                    | (RESOURCE_PACKAGE, NON_FUNGIBLE_PROOF_BLUEPRINT) => {
+                        let proof = Proof(Own(node_id.clone()));
+                        LocalAuthZone::push(proof, api)?;
+                    }
+                    _ => {
+                        // No-op, but can be extended
+                    }
+                },
+                TypeInfoSubstate::KeyValueStore(_)
+                | TypeInfoSubstate::GlobalAddressReservation(_)
+                | TypeInfoSubstate::GlobalAddressPhantom(_) => {
+                    // No-op, but can be extended
                 }
-                (RESOURCE_MANAGER_PACKAGE, PROOF_BLUEPRINT) => {
-                    let proof = Proof(owned_node.clone().into());
-                    ComponentAuthZone::sys_push(proof, api)?;
-                }
-                _ => {}
             }
         }
 
         Ok(())
     }
-
-    fn perform_validation<'a, Y>(
-        request: &RuntimeValidationRequest,
-        env: &mut Y,
-    ) -> Result<(), RuntimeError>
-    where
-        Y: ClientObjectApi<RuntimeError>,
-    {
-        let should_skip_assertion = request.skip_assertion;
-        match &request.validation {
-            RuntimeValidation::WithinEpochRange {
-                start_epoch_inclusive,
-                end_epoch_exclusive,
-            } => {
-                // TODO - Instead of doing a check of the exact epoch, we could do a check in range [X, Y]
-                //        Which could allow for better caching of transaction validity over epoch boundaries
-                let current_epoch = Runtime::sys_current_epoch(env)?;
-
-                if !should_skip_assertion && current_epoch < *start_epoch_inclusive {
-                    return Err(RuntimeError::ApplicationError(
-                        ApplicationError::TransactionProcessorError(
-                            TransactionProcessorError::TransactionEpochNotYetValid {
-                                valid_from: *start_epoch_inclusive,
-                                current_epoch,
-                            },
-                        ),
-                    ));
-                }
-                if !should_skip_assertion && current_epoch >= *end_epoch_exclusive {
-                    return Err(RuntimeError::ApplicationError(
-                        ApplicationError::TransactionProcessorError(
-                            TransactionProcessorError::TransactionEpochNoLongerValid {
-                                valid_until: *end_epoch_exclusive - 1,
-                                current_epoch,
-                            },
-                        ),
-                    ));
-                }
-
-                Ok(())
-            }
-            RuntimeValidation::IntentHashUniqueness { .. } => {
-                // TODO - Add intent hash replay prevention here
-                // This will to enable its removal from the node
-                Ok(())
-            }
-        }
-    }
 }
 
-struct TransactionProcessorWithApi<'blob, 'a, Y: ClientApi<RuntimeError>> {
+struct TransactionProcessorWithApi<'a, Y: ClientApi<RuntimeError>> {
     worktop: Worktop,
-    processor: TransactionProcessor<'blob>,
+    processor: TransactionProcessor,
     api: &'a mut Y,
 }
 
-impl<'blob, 'a, Y: ClientApi<RuntimeError>> TransformHandler<RuntimeError>
-    for TransactionProcessorWithApi<'blob, 'a, Y>
+impl<'a, Y: ClientApi<RuntimeError>> TransformHandler<RuntimeError>
+    for TransactionProcessorWithApi<'a, Y>
 {
     fn replace_bucket(&mut self, b: ManifestBucket) -> Result<Own, RuntimeError> {
-        self.processor.take_bucket(&b).map(|x| Own::Bucket(x.0))
+        self.processor.take_bucket(&b).map(|x| x.0)
     }
 
     fn replace_proof(&mut self, p: ManifestProof) -> Result<Own, RuntimeError> {
-        self.processor.take_proof(&p).map(|x| Own::Proof(x.0))
+        self.processor.take_proof(&p).map(|x| x.0)
+    }
+
+    fn replace_address_reservation(
+        &mut self,
+        r: ManifestAddressReservation,
+    ) -> Result<Own, RuntimeError> {
+        self.processor.take_address_reservation(&r).map(|x| x.0)
+    }
+
+    fn replace_named_address(&mut self, a: u32) -> Result<Reference, RuntimeError> {
+        self.processor.get_address(&a).map(|x| Reference(x))
     }
 
     fn replace_expression(&mut self, e: ManifestExpression) -> Result<Vec<Own>, RuntimeError> {
         match e {
             ManifestExpression::EntireWorktop => {
-                let buckets = self.worktop.sys_drain(self.api)?;
-                Ok(buckets.into_iter().map(|b| Own::Bucket(b.0)).collect())
+                let buckets = self.worktop.drain(self.api)?;
+                Ok(buckets.into_iter().map(|b| b.0).collect())
             }
             ManifestExpression::EntireAuthZone => {
-                let proofs = ComponentAuthZone::sys_drain(self.api)?;
-                Ok(proofs.into_iter().map(|p| Own::Proof(p.0)).collect())
+                let proofs = LocalAuthZone::drain(self.api)?;
+                Ok(proofs.into_iter().map(|p| p.0).collect())
             }
         }
     }
 
     fn replace_blob(&mut self, b: ManifestBlobRef) -> Result<Vec<u8>, RuntimeError> {
-        Ok(self.processor.get_blob(&b)?.clone())
+        Ok(self.processor.get_blob(&b)?.to_vec())
     }
 }

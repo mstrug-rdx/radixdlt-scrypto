@@ -1,9 +1,9 @@
 use crate::data::scrypto::model::*;
-use crate::{
-    math::{BnumI256, Decimal},
-    *,
-};
+use crate::*;
+use radix_engine_common::math::Decimal;
 use sbor::*;
+
+use super::{check_fungible_amount, check_non_fungible_amount};
 
 /// Represents the type of a resource.
 #[derive(Debug, Clone, Copy, Sbor, Eq, PartialEq)]
@@ -38,8 +38,11 @@ impl ResourceType {
     }
 
     pub fn check_amount(&self, amount: Decimal) -> bool {
-        !amount.is_negative()
-            && amount.0 % BnumI256::from(10i128.pow((18 - self.divisibility().unwrap_or(0)).into()))
-                == BnumI256::from(0)
+        match self {
+            ResourceType::Fungible { divisibility } => {
+                check_fungible_amount(&amount, *divisibility)
+            }
+            ResourceType::NonFungible { .. } => check_non_fungible_amount(&amount),
+        }
     }
 }

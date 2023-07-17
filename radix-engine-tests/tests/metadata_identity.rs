@@ -1,46 +1,25 @@
-use radix_engine::errors::{ModuleError, RuntimeError};
-use radix_engine::system::kernel_modules::auth::AuthError;
+use radix_engine::errors::{RuntimeError, SystemModuleError};
+use radix_engine::system::system_modules::auth::AuthError;
 use radix_engine::types::*;
-use radix_engine_interface::api::node_modules::metadata::{MetadataEntry, MetadataValue};
-use radix_engine_interface::blueprints::resource::*;
+use radix_engine_interface::api::node_modules::metadata::MetadataValue;
 use scrypto_unit::*;
 use transaction::builder::ManifestBuilder;
-use transaction::ecdsa_secp256k1::EcdsaSecp256k1PrivateKey;
-
-fn create_identity(
-    test_runner: &mut TestRunner,
-    pk: EcdsaSecp256k1PublicKey,
-    is_virtual: bool,
-) -> ComponentAddress {
-    if is_virtual {
-        ComponentAddress::virtual_identity_from_public_key(&pk)
-    } else {
-        let owner_id = NonFungibleGlobalId::from_public_key(&pk);
-        let manifest = ManifestBuilder::new()
-            .lock_fee(FAUCET_COMPONENT, 10.into())
-            .create_identity(rule!(require(owner_id)))
-            .build();
-        let receipt = test_runner.execute_manifest(manifest, vec![]);
-        let component_address = receipt.expect_commit(true).new_component_addresses()[0];
-
-        component_address
-    }
-}
+use transaction::signing::secp256k1::Secp256k1PrivateKey;
 
 fn can_set_identity_metadata_with_owner(is_virtual: bool) {
     // Arrange
     let mut test_runner = TestRunner::builder().build();
-    let pk = EcdsaSecp256k1PrivateKey::from_u64(1).unwrap().public_key();
+    let pk = Secp256k1PrivateKey::from_u64(1).unwrap().public_key();
     let owner_id = NonFungibleGlobalId::from_public_key(&pk);
-    let component_address = create_identity(&mut test_runner, pk.clone(), is_virtual);
+    let component_address = test_runner.new_identity(pk.clone(), is_virtual);
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .set_metadata(
-            component_address.into(),
+            component_address,
             "name".to_string(),
-            MetadataEntry::Value(MetadataValue::String("best package ever!".to_string())),
+            MetadataValue::String("best package ever!".to_string()),
         )
         .build();
     let receipt = test_runner.execute_manifest(manifest, vec![owner_id]);
@@ -52,7 +31,7 @@ fn can_set_identity_metadata_with_owner(is_virtual: bool) {
         .expect("Should exist");
     assert_eq!(
         value,
-        MetadataEntry::Value(MetadataValue::String("best package ever!".to_string()))
+        MetadataValue::String("best package ever!".to_string())
     );
 }
 
@@ -69,16 +48,16 @@ fn can_set_allocated_identity_metadata_with_owner() {
 fn cannot_set_identity_metadata_without_owner(is_virtual: bool) {
     // Arrange
     let mut test_runner = TestRunner::builder().build();
-    let pk = EcdsaSecp256k1PrivateKey::from_u64(1).unwrap().public_key();
-    let component_address = create_identity(&mut test_runner, pk.clone(), is_virtual);
+    let pk = Secp256k1PrivateKey::from_u64(1).unwrap().public_key();
+    let component_address = test_runner.new_identity(pk.clone(), is_virtual);
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .set_metadata(
-            Address::Component(component_address),
+            component_address,
             "name".to_string(),
-            MetadataEntry::Value(MetadataValue::String("best package ever!".to_string())),
+            MetadataValue::String("best package ever!".to_string()),
         )
         .build();
     let receipt = test_runner.execute_manifest(manifest, vec![]);
@@ -87,7 +66,9 @@ fn cannot_set_identity_metadata_without_owner(is_virtual: bool) {
     receipt.expect_specific_failure(|e| {
         matches!(
             e,
-            RuntimeError::ModuleError(ModuleError::AuthError(AuthError::Unauthorized { .. }))
+            RuntimeError::SystemModuleError(SystemModuleError::AuthError(
+                AuthError::Unauthorized { .. }
+            ))
         )
     });
 }

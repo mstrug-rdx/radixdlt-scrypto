@@ -1,15 +1,14 @@
 use radix_engine::blueprints::access_controller::AccessControllerError;
+use radix_engine::blueprints::resource::FungibleResourceManagerError;
 use radix_engine::errors::ApplicationError;
-use radix_engine::errors::ModuleError;
 use radix_engine::errors::RuntimeError;
-use radix_engine::system::kernel_modules::auth::AuthError;
+use radix_engine::errors::SystemModuleError;
+use radix_engine::system::system_modules::auth::AuthError;
 use radix_engine::transaction::TransactionReceipt;
 use radix_engine::types::*;
 use radix_engine_interface::blueprints::access_controller::*;
-use radix_engine_interface::blueprints::clock::TimePrecision;
-use radix_engine_interface::blueprints::resource::*;
-use scrypto_unit::TestRunner;
-use transaction::{builder::ManifestBuilder, model::TransactionManifest};
+use scrypto_unit::{CustomGenesis, TestRunner};
+use transaction::builder::*;
 
 #[test]
 pub fn creating_an_access_controller_succeeds() {
@@ -58,9 +57,9 @@ pub fn quick_confirm_non_existent_recovery_fails() {
     let receipt = test_runner.quick_confirm_recovery(
         Role::Primary,
         Role::Recovery,
-        rule!(require(PACKAGE_TOKEN)),
-        rule!(require(PACKAGE_TOKEN)),
-        rule!(require(PACKAGE_TOKEN)),
+        rule!(require(PACKAGE_OF_DIRECT_CALLER_VIRTUAL_BADGE)),
+        rule!(require(PACKAGE_OF_DIRECT_CALLER_VIRTUAL_BADGE)),
+        rule!(require(PACKAGE_OF_DIRECT_CALLER_VIRTUAL_BADGE)),
         Some(10),
     );
 
@@ -104,7 +103,7 @@ pub fn timed_confirm_recovery_before_delay_passes_fails() {
         rule!(require(RADIX_TOKEN)),
         Some(10),
     );
-    test_runner.push_time_forward(9);
+    test_runner.set_current_minute(9);
 
     // Act
     let receipt = test_runner.timed_confirm_recovery(
@@ -130,7 +129,7 @@ pub fn timed_confirm_recovery_after_delay_passes_succeeds() {
         rule!(require(RADIX_TOKEN)),
         Some(10),
     );
-    test_runner.push_time_forward(10);
+    test_runner.set_current_minute(10);
 
     // Act
     let receipt = test_runner.timed_confirm_recovery(
@@ -156,7 +155,7 @@ pub fn timed_confirm_recovery_with_disabled_timed_recovery_fails() {
         rule!(require(RADIX_TOKEN)),
         Some(10),
     );
-    test_runner.push_time_forward(10);
+    test_runner.set_current_minute(10);
 
     // Act
     let receipt = test_runner.timed_confirm_recovery(
@@ -169,32 +168,6 @@ pub fn timed_confirm_recovery_with_disabled_timed_recovery_fails() {
 
     // Assert
     receipt.expect_specific_failure(is_no_timed_recoveries_found_error);
-}
-
-#[test]
-pub fn timed_confirm_recovery_with_non_recovery_role_fails() {
-    // Arrange
-    let mut test_runner = AccessControllerTestRunner::new(None);
-    test_runner.initiate_recovery(
-        Role::Primary,
-        rule!(require(RADIX_TOKEN)),
-        rule!(require(RADIX_TOKEN)),
-        rule!(require(RADIX_TOKEN)),
-        Some(10),
-    );
-    test_runner.push_time_forward(10);
-
-    // Act
-    let receipt = test_runner.timed_confirm_recovery(
-        Role::Primary,
-        rule!(require(RADIX_TOKEN)),
-        rule!(require(RADIX_TOKEN)),
-        rule!(require(RADIX_TOKEN)),
-        Some(10),
-    );
-
-    // Assert
-    receipt.expect_specific_failure(is_auth_unauthorized_error);
 }
 
 #[test]
@@ -212,7 +185,7 @@ pub fn primary_is_unlocked_after_a_successful_recovery() {
         .lock_primary_role(Role::Recovery)
         .expect_commit_success();
 
-    test_runner.push_time_forward(10);
+    test_runner.set_current_minute(10);
 
     test_runner
         .timed_confirm_recovery(
@@ -238,9 +211,9 @@ pub fn stop_timed_recovery_with_no_access_fails() {
 
     let manifest = ManifestBuilder::new()
         .call_method(
-            test_runner.access_controller_component_address,
+            test_runner.access_controller_address,
             "stop_timed_recovery",
-            to_manifest_value(&AccessControllerStopTimedRecoveryInput {
+            to_manifest_value_and_unwrap!(&AccessControllerStopTimedRecoveryInput {
                 rule_set: RuleSet {
                     primary_role: rule!(require(RADIX_TOKEN)),
                     recovery_role: rule!(require(RADIX_TOKEN)),
@@ -256,6 +229,27 @@ pub fn stop_timed_recovery_with_no_access_fails() {
 
     // Assert
     receipt.expect_specific_failure(is_auth_unauthorized_error)
+}
+
+#[test]
+pub fn cancel_recovery() {
+    // Arrange
+    let mut test_runner = AccessControllerTestRunner::new(Some(10));
+    test_runner
+        .initiate_recovery(
+            Role::Primary,
+            AccessRule::AllowAll,
+            AccessRule::DenyAll,
+            AccessRule::DenyAll,
+            Some(1),
+        )
+        .expect_commit_success();
+
+    // Act
+    let receipt = test_runner.cancel_recovery_attempt(Role::Primary);
+
+    //Assert
+    receipt.expect_commit_success();
 }
 
 #[test]
@@ -310,11 +304,209 @@ pub fn quick_confirm_semantics_are_correct() {
     }
 }
 
+#[test]
+pub fn primary_or_recovery_can_initiate_a_badge_withdraw_attempt() {
+    // Arrange
+    for role in [Role::Primary, Role::Recovery] {
+        let mut test_runner = AccessControllerTestRunner::new(Some(10));
+
+        // Act
+        let receipt = test_runner.initiate_badge_withdraw_attempt(role, true);
+
+        // Assert
+        receipt.expect_commit_success();
+    }
+}
+
+#[test]
+pub fn cant_initiate_a_badge_withdraw_attempt_without_valid_proofs() {
+    // Arrange
+    for role in [Role::Primary, Role::Recovery] {
+        let mut test_runner = AccessControllerTestRunner::new(Some(10));
+
+        // Act
+        let receipt = test_runner.initiate_badge_withdraw_attempt(role, false);
+
+        // Assert
+        receipt.expect_specific_failure(is_auth_unauthorized_error);
+    }
+}
+
+#[test]
+pub fn confirmation_role_cant_initiate_a_badge_withdraw_attempt_as_primary_or_recovery() {
+    // Arrange
+    for ident in [
+        ACCESS_CONTROLLER_INITIATE_BADGE_WITHDRAW_ATTEMPT_AS_PRIMARY_IDENT,
+        ACCESS_CONTROLLER_INITIATE_BADGE_WITHDRAW_ATTEMPT_AS_RECOVERY_IDENT,
+    ] {
+        let mut test_runner = AccessControllerTestRunner::new(Some(10));
+
+        // Act
+        let manifest = test_runner
+            .manifest_builder(Role::Confirmation)
+            .call_method(
+                test_runner.access_controller_address,
+                ident,
+                to_manifest_value_and_unwrap!(
+                    &AccessControllerInitiateBadgeWithdrawAttemptAsPrimaryInput
+                ),
+            )
+            .build();
+        let receipt = test_runner.execute_manifest(manifest);
+
+        // Assert
+        receipt.expect_specific_failure(is_auth_unauthorized_error);
+    }
+}
+
+#[test]
+pub fn badge_withdraw_only_succeeds_when_confirmation_is_performed_by_allowed_roles() {
+    // Arrange
+    let test_vectors: [(Role, Role, Option<ErrorCheckFunction>); 4] = [
+        // Proposer: Primary Role
+        (
+            Role::Primary,                        // Initiator
+            Role::Recovery,                       // Confirm
+            Some(is_drop_non_empty_bucket_error), // Expected Error
+        ),
+        (
+            Role::Primary,
+            Role::Primary,
+            Some(is_auth_unauthorized_error),
+        ),
+        // Proposer: Recovery Role
+        (
+            Role::Recovery,
+            Role::Primary,
+            Some(is_drop_non_empty_bucket_error),
+        ),
+        (
+            Role::Recovery,
+            Role::Recovery,
+            Some(is_auth_unauthorized_error),
+        ),
+    ];
+
+    for (proposer, confirmor, expected_error) in test_vectors {
+        let mut test_runner = AccessControllerTestRunner::new(Some(10));
+        test_runner
+            .initiate_badge_withdraw_attempt(proposer, true)
+            .expect_commit_success();
+
+        // Act
+        let receipt = test_runner.quick_confirm_badge_withdraw_attempt(confirmor, proposer);
+
+        // Assert
+        if let Some(error_check_fn) = expected_error {
+            receipt.expect_specific_failure(error_check_fn);
+        } else {
+            receipt.expect_commit_success();
+        }
+    }
+}
+
+#[test]
+pub fn primary_can_cancel_their_badge_withdraw_attempt() {
+    // Arrange
+    let mut test_runner = AccessControllerTestRunner::new(Some(10));
+    test_runner
+        .initiate_badge_withdraw_attempt(Role::Primary, true)
+        .expect_commit_success();
+
+    {
+        // Act
+        let receipt = test_runner.cancel_badge_withdraw_attempt(Role::Primary);
+
+        // Assert
+        receipt.expect_commit_success();
+    }
+
+    {
+        // Act
+        let receipt =
+            test_runner.quick_confirm_badge_withdraw_attempt(Role::Recovery, Role::Primary);
+
+        // Assert
+        receipt.expect_specific_failure(is_no_badge_withdraw_attempts_exists_for_proposer_error);
+    }
+}
+
+#[test]
+pub fn recovery_can_cancel_their_badge_withdraw_attempt() {
+    // Arrange
+    let mut test_runner = AccessControllerTestRunner::new(Some(10));
+    test_runner
+        .initiate_badge_withdraw_attempt(Role::Recovery, true)
+        .expect_commit_success();
+
+    {
+        // Act
+        let receipt = test_runner.cancel_badge_withdraw_attempt(Role::Recovery);
+
+        // Assert
+        receipt.expect_commit_success();
+    }
+
+    {
+        // Act
+        let receipt =
+            test_runner.quick_confirm_badge_withdraw_attempt(Role::Confirmation, Role::Recovery);
+
+        // Assert
+        receipt.expect_specific_failure(is_no_badge_withdraw_attempts_exists_for_proposer_error);
+    }
+}
+
+#[test]
+pub fn minting_of_recovery_badges_succeeds_for_primary_role() {
+    // Arrange
+    let mut test_runner = AccessControllerTestRunner::new(Some(100));
+
+    let mut non_fungible_local_ids = index_set_new();
+    non_fungible_local_ids.insert(NonFungibleLocalId::integer(1));
+
+    // Act
+    let receipt = test_runner.mint_recovery_badges(Role::Primary, non_fungible_local_ids);
+
+    // Assert
+    receipt.expect_commit_success();
+}
+
+#[test]
+pub fn minting_of_recovery_badges_succeeds_for_recovery_role() {
+    // Arrange
+    let mut test_runner = AccessControllerTestRunner::new(Some(100));
+
+    let mut non_fungible_local_ids = index_set_new();
+    non_fungible_local_ids.insert(NonFungibleLocalId::integer(1));
+
+    // Act
+    let receipt = test_runner.mint_recovery_badges(Role::Recovery, non_fungible_local_ids);
+
+    // Assert
+    receipt.expect_commit_success();
+}
+
+#[test]
+pub fn minting_of_recovery_badges_fails_for_confirmation_role() {
+    // Arrange
+    let mut test_runner = AccessControllerTestRunner::new(Some(100));
+
+    let mut non_fungible_local_ids = index_set_new();
+    non_fungible_local_ids.insert(NonFungibleLocalId::integer(1));
+
+    // Act
+    let receipt = test_runner.mint_recovery_badges(Role::Confirmation, non_fungible_local_ids);
+
+    // Assert
+    receipt.expect_specific_failure(is_auth_unauthorized_error);
+}
+
 //=============
 // State Tests
 //=============
 
-mod normal_operations_with_primary_unlocked {
+mod no_recovery_with_primary_unlocked {
     use super::*;
 
     const TIMED_RECOVERY_DELAY_IN_MINUTES: Option<u32> = Some(10);
@@ -474,7 +666,7 @@ mod normal_operations_with_primary_unlocked {
     pub fn timed_confirm_recovery() {
         // Arrange
         let test_vectors: [(Role, Option<ErrorCheckFunction>); 2] = [
-            (Role::Primary, Some(is_auth_unauthorized_error)),
+            (Role::Primary, Some(is_no_timed_recoveries_found_error)),
             (Role::Recovery, Some(is_no_timed_recoveries_found_error)),
         ];
 
@@ -562,7 +754,7 @@ mod normal_operations_with_primary_unlocked {
     }
 }
 
-mod normal_operations_with_primary_locked {
+mod no_recovery_with_primary_locked {
     use super::*;
 
     const TIMED_RECOVERY_DELAY_IN_MINUTES: Option<u32> = Some(10);
@@ -729,7 +921,7 @@ mod normal_operations_with_primary_locked {
     pub fn timed_confirm_recovery() {
         // Arrange
         let test_vectors: [(Role, Option<ErrorCheckFunction>); 2] = [
-            (Role::Primary, Some(is_auth_unauthorized_error)),
+            (Role::Primary, Some(is_no_timed_recoveries_found_error)),
             (Role::Recovery, Some(is_no_timed_recoveries_found_error)),
         ];
 
@@ -992,7 +1184,10 @@ mod recovery_mode_with_primary_unlocked {
     pub fn timed_confirm_recovery() {
         // Arrange
         let test_vectors: [(Role, Option<ErrorCheckFunction>); 2] = [
-            (Role::Primary, Some(is_auth_unauthorized_error)),
+            (
+                Role::Primary,
+                Some(is_timed_recovery_delay_has_not_elapsed_error),
+            ),
             (
                 Role::Recovery,
                 Some(is_timed_recovery_delay_has_not_elapsed_error),
@@ -1261,7 +1456,10 @@ mod recovery_mode_with_primary_locked {
     pub fn timed_confirm_recovery() {
         // Arrange
         let test_vectors: [(Role, Option<ErrorCheckFunction>); 2] = [
-            (Role::Primary, Some(is_auth_unauthorized_error)),
+            (
+                Role::Primary,
+                Some(is_timed_recovery_delay_has_not_elapsed_error),
+            ),
             (
                 Role::Recovery,
                 Some(is_timed_recovery_delay_has_not_elapsed_error),
@@ -1358,7 +1556,9 @@ type ErrorCheckFunction = fn(&RuntimeError) -> bool;
 fn is_auth_unauthorized_error(error: &RuntimeError) -> bool {
     matches!(
         error,
-        RuntimeError::ModuleError(ModuleError::AuthError(AuthError::Unauthorized { .. }))
+        RuntimeError::SystemModuleError(SystemModuleError::AuthError(
+            AuthError::Unauthorized { .. }
+        ))
     )
 }
 
@@ -1385,6 +1585,15 @@ fn is_no_recovery_exists_for_proposer_error(error: &RuntimeError) -> bool {
         error,
         RuntimeError::ApplicationError(ApplicationError::AccessControllerError(
             AccessControllerError::NoRecoveryExistsForProposer { .. }
+        ))
+    )
+}
+
+fn is_no_badge_withdraw_attempts_exists_for_proposer_error(error: &RuntimeError) -> bool {
+    matches!(
+        error,
+        RuntimeError::ApplicationError(ApplicationError::AccessControllerError(
+            AccessControllerError::NoBadgeWithdrawAttemptExistsForProposer { .. }
         ))
     )
 }
@@ -1416,13 +1625,22 @@ fn is_recovery_proposal_mismatch_error(error: &RuntimeError) -> bool {
     )
 }
 
+fn is_drop_non_empty_bucket_error(error: &RuntimeError) -> bool {
+    matches!(
+        error,
+        RuntimeError::ApplicationError(ApplicationError::FungibleResourceManagerError(
+            FungibleResourceManagerError::DropNonEmptyBucket
+        ))
+    )
+}
+
 #[allow(dead_code)]
 struct AccessControllerTestRunner {
     pub test_runner: TestRunner,
 
     pub account: (ComponentAddress, PublicKey),
 
-    pub access_controller_component_address: ComponentAddress,
+    pub access_controller_address: ComponentAddress,
     pub primary_role_badge: ResourceAddress,
     pub recovery_role_badge: ResourceAddress,
     pub confirmation_role_badge: ResourceAddress,
@@ -1433,27 +1651,30 @@ struct AccessControllerTestRunner {
 #[allow(dead_code)]
 impl AccessControllerTestRunner {
     pub fn new(timed_recovery_delay_in_minutes: Option<u32>) -> Self {
-        let mut test_runner = TestRunner::builder().build();
+        let mut test_runner = TestRunner::builder()
+            .without_trace()
+            .with_custom_genesis(CustomGenesis::default(
+                Epoch::of(1),
+                CustomGenesis::default_consensus_manager_config(),
+            ))
+            .build();
 
         // Creating a new account - this is where the badges will be held
-        let (public_key, _, account_component) = test_runner.new_account(false);
+        let (public_key, _, account) = test_runner.new_account(false);
 
         // Creating the resource to be protected
-        let controlled_asset = test_runner.create_fungible_resource(1.into(), 0, account_component);
+        let controlled_asset = test_runner.create_fungible_resource(1.into(), 0, account);
 
         // Creating three badges for the three roles.
-        let primary_role_badge =
-            test_runner.create_fungible_resource(1.into(), 0, account_component);
-        let recovery_role_badge =
-            test_runner.create_fungible_resource(1.into(), 0, account_component);
-        let confirmation_role_badge =
-            test_runner.create_fungible_resource(1.into(), 0, account_component);
+        let primary_role_badge = test_runner.create_fungible_resource(1.into(), 0, account);
+        let recovery_role_badge = test_runner.create_fungible_resource(1.into(), 0, account);
+        let confirmation_role_badge = test_runner.create_fungible_resource(1.into(), 0, account);
 
         // Creating the access controller component
         let manifest = ManifestBuilder::new()
-            .lock_fee(account_component, 10.into())
-            .withdraw_from_account(account_component, controlled_asset, 1.into())
-            .take_from_worktop(controlled_asset, |builder, bucket| {
+            .lock_fee(account, 500u32.into())
+            .withdraw_from_account(account, controlled_asset, 1.into())
+            .take_all_from_worktop(controlled_asset, |builder, bucket| {
                 builder.create_access_controller(
                     bucket,
                     rule!(require(primary_role_badge)),
@@ -1465,18 +1686,17 @@ impl AccessControllerTestRunner {
             .build();
         let receipt = test_runner.execute_manifest(
             manifest,
-            [NonFungibleGlobalId::from_public_key(&public_key)].into(),
+            [NonFungibleGlobalId::from_public_key(&public_key)],
         );
         receipt.expect_commit_success();
 
-        let access_controller_component_address =
-            receipt.expect_commit(true).new_component_addresses()[0];
+        let access_controller_address = receipt.expect_commit(true).new_component_addresses()[0];
 
         Self {
             test_runner,
-            account: (account_component, public_key.into()),
+            account: (account, public_key.into()),
 
-            access_controller_component_address,
+            access_controller_address,
             primary_role_badge,
             recovery_role_badge,
             confirmation_role_badge,
@@ -1489,9 +1709,9 @@ impl AccessControllerTestRunner {
         let manifest = self
             .manifest_builder(as_role)
             .call_method(
-                self.access_controller_component_address,
+                self.access_controller_address,
                 "create_proof",
-                to_manifest_value(&AccessControllerCreateProofInput {}),
+                to_manifest_value_and_unwrap!(&AccessControllerCreateProofInput {}),
             )
             .pop_from_auth_zone(|builder, _| builder)
             .build();
@@ -1515,9 +1735,9 @@ impl AccessControllerTestRunner {
         let manifest = self
             .manifest_builder(as_role)
             .call_method(
-                self.access_controller_component_address,
+                self.access_controller_address,
                 method_name,
-                to_manifest_value(&AccessControllerInitiateRecoveryAsPrimaryInput {
+                to_manifest_value_and_unwrap!(&AccessControllerInitiateRecoveryAsPrimaryInput {
                     rule_set: RuleSet {
                         primary_role: proposed_primary_role,
                         recovery_role: proposed_recovery_role,
@@ -1525,6 +1745,35 @@ impl AccessControllerTestRunner {
                     },
                     timed_recovery_delay_in_minutes,
                 }),
+            )
+            .build();
+        self.execute_manifest(manifest)
+    }
+
+    pub fn initiate_badge_withdraw_attempt(
+        &mut self,
+        as_role: Role,
+        create_proof: bool,
+    ) -> TransactionReceipt {
+        let method_name = match as_role {
+            Role::Primary => ACCESS_CONTROLLER_INITIATE_BADGE_WITHDRAW_ATTEMPT_AS_PRIMARY_IDENT,
+            Role::Recovery => ACCESS_CONTROLLER_INITIATE_BADGE_WITHDRAW_ATTEMPT_AS_RECOVERY_IDENT,
+            Role::Confirmation => panic!("Confirmation Role can't initiate recovery!"),
+        };
+
+        let mut manifest_builder = if create_proof {
+            self.manifest_builder(as_role)
+        } else {
+            ManifestBuilder::new()
+        };
+
+        let manifest = manifest_builder
+            .call_method(
+                self.access_controller_address,
+                method_name,
+                to_manifest_value_and_unwrap!(
+                    &AccessControllerInitiateBadgeWithdrawAttemptAsPrimaryInput {}
+                ),
             )
             .build();
         self.execute_manifest(manifest)
@@ -1557,9 +1806,9 @@ impl AccessControllerTestRunner {
         let manifest = self
             .manifest_builder(as_role)
             .call_method(
-                self.access_controller_component_address,
+                self.access_controller_address,
                 method_name,
-                to_manifest_value(
+                to_manifest_value_and_unwrap!(
                     &AccessControllerQuickConfirmPrimaryRoleRecoveryProposalInput {
                         rule_set: RuleSet {
                             primary_role: proposed_primary_role,
@@ -1567,7 +1816,40 @@ impl AccessControllerTestRunner {
                             confirmation_role: proposed_confirmation_role,
                         },
                         timed_recovery_delay_in_minutes,
-                    },
+                    }
+                ),
+            )
+            .build();
+        self.execute_manifest(manifest)
+    }
+
+    pub fn quick_confirm_badge_withdraw_attempt(
+        &mut self,
+        as_role: Role,
+        proposer: Role,
+    ) -> TransactionReceipt {
+        let proposer = match proposer {
+            Role::Primary => Proposer::Primary,
+            Role::Recovery => Proposer::Recovery,
+            Role::Confirmation => panic!("Confirmation is not a valid proposer"),
+        };
+
+        let method_name = match proposer {
+            Proposer::Primary => {
+                ACCESS_CONTROLLER_QUICK_CONFIRM_PRIMARY_ROLE_BADGE_WITHDRAW_ATTEMPT_IDENT
+            }
+            Proposer::Recovery => {
+                ACCESS_CONTROLLER_QUICK_CONFIRM_RECOVERY_ROLE_BADGE_WITHDRAW_ATTEMPT_IDENT
+            }
+        };
+
+        let manifest = self
+            .manifest_builder(as_role)
+            .call_method(
+                self.access_controller_address,
+                method_name,
+                to_manifest_value_and_unwrap!(
+                    &AccessControllerQuickConfirmPrimaryRoleBadgeWithdrawAttemptInput {}
                 ),
             )
             .build();
@@ -1585,9 +1867,9 @@ impl AccessControllerTestRunner {
         let manifest = self
             .manifest_builder(as_role)
             .call_method(
-                self.access_controller_component_address,
+                self.access_controller_address,
                 ACCESS_CONTROLLER_TIMED_CONFIRM_RECOVERY_IDENT,
-                to_manifest_value(&AccessControllerTimedConfirmRecoveryInput {
+                to_manifest_value_and_unwrap!(&AccessControllerTimedConfirmRecoveryInput {
                     rule_set: RuleSet {
                         primary_role: proposed_primary_role,
                         recovery_role: proposed_recovery_role,
@@ -1610,9 +1892,31 @@ impl AccessControllerTestRunner {
         let manifest = self
             .manifest_builder(as_role)
             .call_method(
-                self.access_controller_component_address,
+                self.access_controller_address,
                 method_name,
-                to_manifest_value(&AccessControllerCancelPrimaryRoleRecoveryProposalInput),
+                to_manifest_value_and_unwrap!(
+                    &AccessControllerCancelPrimaryRoleRecoveryProposalInput
+                ),
+            )
+            .build();
+        self.execute_manifest(manifest)
+    }
+
+    pub fn cancel_badge_withdraw_attempt(&mut self, as_role: Role) -> TransactionReceipt {
+        let method_name = match as_role {
+            Role::Primary => ACCESS_CONTROLLER_CANCEL_PRIMARY_ROLE_BADGE_WITHDRAW_ATTEMPT_IDENT,
+            Role::Recovery => ACCESS_CONTROLLER_CANCEL_RECOVERY_ROLE_BADGE_WITHDRAW_ATTEMPT_IDENT,
+            Role::Confirmation => panic!("No method for the given role"),
+        };
+
+        let manifest = self
+            .manifest_builder(as_role)
+            .call_method(
+                self.access_controller_address,
+                method_name,
+                to_manifest_value_and_unwrap!(
+                    &AccessControllerCancelPrimaryRoleBadgeWithdrawAttemptInput
+                ),
             )
             .build();
         self.execute_manifest(manifest)
@@ -1622,9 +1926,9 @@ impl AccessControllerTestRunner {
         let manifest = self
             .manifest_builder(as_role)
             .call_method(
-                self.access_controller_component_address,
+                self.access_controller_address,
                 "lock_primary_role",
-                to_manifest_value(&AccessControllerLockPrimaryRoleInput {}),
+                to_manifest_value_and_unwrap!(&AccessControllerLockPrimaryRoleInput {}),
             )
             .build();
         self.execute_manifest(manifest)
@@ -1634,9 +1938,9 @@ impl AccessControllerTestRunner {
         let manifest = self
             .manifest_builder(as_role)
             .call_method(
-                self.access_controller_component_address,
+                self.access_controller_address,
                 "unlock_primary_role",
-                to_manifest_value(&AccessControllerUnlockPrimaryRoleInput {}),
+                to_manifest_value_and_unwrap!(&AccessControllerUnlockPrimaryRoleInput {}),
             )
             .build();
         self.execute_manifest(manifest)
@@ -1653,9 +1957,9 @@ impl AccessControllerTestRunner {
         let manifest = self
             .manifest_builder(as_role)
             .call_method(
-                self.access_controller_component_address,
+                self.access_controller_address,
                 "stop_timed_recovery",
-                to_manifest_value(&AccessControllerStopTimedRecoveryInput {
+                to_manifest_value_and_unwrap!(&AccessControllerStopTimedRecoveryInput {
                     rule_set: RuleSet {
                         primary_role: proposed_primary_role,
                         recovery_role: proposed_recovery_role,
@@ -1668,10 +1972,33 @@ impl AccessControllerTestRunner {
         self.execute_manifest(manifest)
     }
 
-    fn execute_manifest(&mut self, manifest: TransactionManifest) -> TransactionReceipt {
+    pub fn mint_recovery_badges(
+        &mut self,
+        as_role: Role,
+        non_fungible_local_ids: IndexSet<NonFungibleLocalId>,
+    ) -> TransactionReceipt {
+        let manifest = self
+            .manifest_builder(as_role)
+            .call_method(
+                self.access_controller_address,
+                ACCESS_CONTROLLER_MINT_RECOVERY_BADGES_IDENT,
+                to_manifest_value_and_unwrap!(&AccessControllerMintRecoveryBadgesInput {
+                    non_fungible_local_ids,
+                }),
+            )
+            .call_method(
+                self.account.0,
+                "try_deposit_batch_or_abort",
+                manifest_args!(ManifestExpression::EntireWorktop),
+            )
+            .build();
+        self.execute_manifest(manifest)
+    }
+
+    fn execute_manifest(&mut self, manifest: TransactionManifestV1) -> TransactionReceipt {
         self.test_runner.execute_manifest_ignoring_fee(
             manifest,
-            [NonFungibleGlobalId::from_public_key(&self.account.1)].into(),
+            [NonFungibleGlobalId::from_public_key(&self.account.1)],
         )
     }
 
@@ -1686,10 +2013,10 @@ impl AccessControllerTestRunner {
         manifest_builder
     }
 
-    fn push_time_forward(&mut self, minutes: i64) {
-        let current_time = self.test_runner.get_current_time(TimePrecision::Minute);
-        let new_time = current_time.add_minutes(minutes).unwrap();
+    fn set_current_minute(&mut self, minutes: i64) {
+        // we use a single-round epochs, so the only possible round advance is to round 1
         self.test_runner
-            .set_current_time(new_time.seconds_since_unix_epoch * 1000);
+            .advance_to_round_at_timestamp(Round::of(1), minutes * 60 * 1000)
+            .expect_commit_success();
     }
 }

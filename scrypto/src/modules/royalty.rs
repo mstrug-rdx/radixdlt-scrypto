@@ -1,25 +1,58 @@
 use crate::engine::scrypto_env::ScryptoEnv;
+use crate::modules::ModuleHandle;
 use crate::runtime::*;
 use crate::*;
+use radix_engine_common::types::RoyaltyAmount;
 use radix_engine_interface::api::node_modules::royalty::{
-    ComponentClaimRoyaltyInput, ComponentRoyaltyCreateInput, ComponentSetRoyaltyConfigInput,
-    COMPONENT_ROYALTY_BLUEPRINT, COMPONENT_ROYALTY_CLAIM_ROYALTY_IDENT,
-    COMPONENT_ROYALTY_CREATE_IDENT, COMPONENT_ROYALTY_SET_ROYALTY_CONFIG_IDENT,
+    ComponentClaimRoyaltiesInput, ComponentLockRoyaltyInput, ComponentRoyaltyCreateInput,
+    ComponentSetRoyaltyInput, COMPONENT_ROYALTY_ADMIN_ROLE, COMPONENT_ROYALTY_ADMIN_UPDATER_ROLE,
+    COMPONENT_ROYALTY_BLUEPRINT, COMPONENT_ROYALTY_CLAIM_ROYALTIES_IDENT,
+    COMPONENT_ROYALTY_CREATE_IDENT, COMPONENT_ROYALTY_LOCK_ROYALTY_IDENT,
+    COMPONENT_ROYALTY_SET_ROYALTY_IDENT,
 };
-use radix_engine_interface::api::types::{NodeModuleId, ObjectId, RENodeId, RoyaltyConfig};
-use radix_engine_interface::api::ClientObjectApi;
+use radix_engine_interface::api::object_api::ObjectModuleId;
+use radix_engine_interface::api::ClientBlueprintApi;
 use radix_engine_interface::blueprints::resource::Bucket;
-use radix_engine_interface::constants::ROYALTY_PACKAGE;
+use radix_engine_interface::constants::ROYALTY_MODULE_PACKAGE;
 use radix_engine_interface::data::scrypto::{scrypto_decode, scrypto_encode};
+use radix_engine_interface::types::ComponentRoyaltyConfig;
+use sbor::rust::string::ToString;
+use sbor::rust::vec;
+use sbor::rust::vec::Vec;
+use scrypto::modules::Attachable;
 
-#[derive(PartialEq, Eq, Hash, Clone)]
-pub struct Royalty(pub ObjectId);
+pub trait HasComponentRoyalties {
+    fn set_royalty<M: ToString>(&self, method: M, amount: RoyaltyAmount);
+    fn lock_royalty<M: ToString>(&self, method: M);
+    fn claim_component_royalties(&self) -> Bucket;
+}
+
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub struct Royalty(pub ModuleHandle);
+
+impl Attachable for Royalty {
+    const MODULE_ID: ObjectModuleId = ObjectModuleId::Royalty;
+
+    fn new(handle: ModuleHandle) -> Self {
+        Royalty(handle)
+    }
+
+    fn handle(&self) -> &ModuleHandle {
+        &self.0
+    }
+}
+
+impl Default for Royalty {
+    fn default() -> Self {
+        Royalty::new(ComponentRoyaltyConfig::default())
+    }
+}
 
 impl Royalty {
-    pub fn new(royalty_config: RoyaltyConfig) -> Self {
+    pub fn new(royalty_config: ComponentRoyaltyConfig) -> Self {
         let rtn = ScryptoEnv
             .call_function(
-                ROYALTY_PACKAGE,
+                ROYALTY_MODULE_PACKAGE,
                 COMPONENT_ROYALTY_BLUEPRINT,
                 COMPONENT_ROYALTY_CREATE_IDENT,
                 scrypto_encode(&ComponentRoyaltyCreateInput { royalty_config }).unwrap(),
@@ -27,52 +60,49 @@ impl Royalty {
             .unwrap();
 
         let royalty: Own = scrypto_decode(&rtn).unwrap();
-        Self(royalty.id())
+        Self(ModuleHandle::Own(royalty))
+    }
+
+    pub fn set_royalty<M: ToString>(&self, method: M, amount: RoyaltyAmount) {
+        self.call_ignore_rtn(
+            COMPONENT_ROYALTY_SET_ROYALTY_IDENT,
+            &ComponentSetRoyaltyInput {
+                method: method.to_string(),
+                amount,
+            },
+        );
+    }
+
+    pub fn lock_royalty<M: ToString>(&self, method: M) {
+        self.call_ignore_rtn(
+            COMPONENT_ROYALTY_LOCK_ROYALTY_IDENT,
+            &ComponentLockRoyaltyInput {
+                method: method.to_string(),
+            },
+        );
+    }
+
+    pub fn claim_royalties(&self) -> Bucket {
+        self.call(
+            COMPONENT_ROYALTY_CLAIM_ROYALTIES_IDENT,
+            &ComponentClaimRoyaltiesInput {},
+        )
     }
 }
 
-impl RoyaltyObject for Royalty {
-    fn self_id(&self) -> (RENodeId, NodeModuleId) {
-        (RENodeId::Object(self.0), NodeModuleId::SELF)
-    }
+pub struct RoyaltyRoles<T> {
+    pub royalty_admin: T,
+    pub royalty_admin_updater: T,
 }
 
-#[derive(PartialEq, Eq, Hash)]
-pub struct AttachedRoyalty(pub Address);
-
-impl RoyaltyObject for AttachedRoyalty {
-    fn self_id(&self) -> (RENodeId, NodeModuleId) {
-        (self.0.into(), NodeModuleId::ComponentRoyalty)
-    }
-}
-
-pub trait RoyaltyObject {
-    fn self_id(&self) -> (RENodeId, NodeModuleId);
-
-    fn set_config(&self, royalty_config: RoyaltyConfig) {
-        let (node_id, module_id) = self.self_id();
-
-        ScryptoEnv
-            .call_module_method(
-                node_id,
-                module_id,
-                COMPONENT_ROYALTY_SET_ROYALTY_CONFIG_IDENT,
-                scrypto_encode(&ComponentSetRoyaltyConfigInput { royalty_config }).unwrap(),
-            )
-            .unwrap();
-    }
-
-    fn claim_royalty(&self) -> Bucket {
-        let (node_id, module_id) = self.self_id();
-
-        let rtn = ScryptoEnv
-            .call_module_method(
-                node_id,
-                module_id,
-                COMPONENT_ROYALTY_CLAIM_ROYALTY_IDENT,
-                scrypto_encode(&ComponentClaimRoyaltyInput {}).unwrap(),
-            )
-            .unwrap();
-        scrypto_decode(&rtn).unwrap()
+impl<T> RoyaltyRoles<T> {
+    pub fn list(self) -> Vec<(&'static str, T)> {
+        vec![
+            (COMPONENT_ROYALTY_ADMIN_ROLE, self.royalty_admin),
+            (
+                COMPONENT_ROYALTY_ADMIN_UPDATER_ROLE,
+                self.royalty_admin_updater,
+            ),
+        ]
     }
 }

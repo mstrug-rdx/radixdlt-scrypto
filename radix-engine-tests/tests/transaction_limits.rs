@@ -1,236 +1,309 @@
 use radix_engine::{
-    errors::{ModuleError, RejectionError, RuntimeError},
-    system::kernel_modules::transaction_limits::TransactionLimitsError,
+    errors::{RuntimeError, SystemModuleError},
+    system::system_modules::limits::TransactionLimitsError,
     transaction::{ExecutionConfig, FeeReserveConfig},
     types::*,
-    wasm::WASM_MEMORY_PAGE_SIZE,
 };
-use radix_engine_interface::{blueprints::resource::*, schema::PackageSchema};
 use scrypto_unit::*;
 use transaction::{builder::ManifestBuilder, model::TestTransaction};
 
 #[test]
-fn transaction_limit_call_frame_memory_exceeded() {
-    // Arrange
-    let mut test_runner = TestRunner::builder().build();
-
-    // Grow memory (wasm pages) to exceed default max wasm memory per instance.
-    let grow_value: usize = DEFAULT_MAX_WASM_MEM_PER_CALL_FRAME / WASM_MEMORY_PAGE_SIZE as usize;
-
-    // Act
-    let code = wat2wasm(&include_str!("wasm/memory.wat").replace("${n}", &grow_value.to_string()));
-    let package_address = test_runner.publish_package(
-        code,
-        single_function_package_schema("Test", "f"),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        AccessRulesConfig::new(),
-    );
-    let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
-        .call_function(package_address, "Test", "f", manifest_args!())
-        .build();
-    let receipt = test_runner.execute_manifest(manifest, vec![]);
-
-    // Assert, exceeded memory should be larger by 1 memory page than the limit
-    let expected_mem = DEFAULT_MAX_WASM_MEM_PER_CALL_FRAME + WASM_MEMORY_PAGE_SIZE as usize;
-    receipt.expect_specific_failure(|e| match e {
-        RuntimeError::ModuleError(ModuleError::TransactionLimitsError(
-            TransactionLimitsError::MaxWasmInstanceMemoryExceeded(x),
-        )) => *x == expected_mem,
-        _ => false,
-    })
-}
-
-#[test]
-fn transaction_limit_memory_exceeded() {
+fn transaction_limit_exceeded_substate_read_count_should_fail() {
     // Arrange
     let mut test_runner = TestRunner::builder().build();
     let package_address = test_runner.compile_and_publish("tests/blueprints/transaction_limits");
-
-    // Calculate value of additional bytes to allocate per call to exceed
-    // max wasm memory per transaction limit in nested calls.
-    let grow_value: usize = DEFAULT_MAX_WASM_MEM_PER_CALL_FRAME / 2;
-
-    // Act
-    let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
-        .call_function(
-            package_address,
-            "TransactionLimitTest",
-            "recursive_with_memory",
-            manifest_args!(DEFAULT_MAX_CALL_DEPTH as u32, grow_value),
+    let component_address = test_runner
+        .execute_manifest(
+            ManifestBuilder::new()
+                .lock_fee(test_runner.faucet_component(), 500u32.into())
+                .call_function(
+                    package_address,
+                    "TransactionLimitTest",
+                    "new",
+                    manifest_args!(),
+                )
+                .build(),
+            vec![],
         )
-        .build();
-    let receipt = test_runner.execute_manifest(manifest, vec![]);
-
-    // Assert
-
-    // One call frame mem:
-    //  => 18 pages from system
-    //  => grow value pages from execution of blueprint
-    //  => one aditional page from blueprint execution
-    let call_frame_mem =
-        (18 + grow_value / WASM_MEMORY_PAGE_SIZE as usize + 1) * WASM_MEMORY_PAGE_SIZE as usize;
-
-    // Expected memory equals how many call_frame_mem can fit in per transaction
-    // memory plus one, as the limit needs to be exceeded to break transaction.
-    let expected_mem = (DEFAULT_MAX_WASM_MEM_PER_TRANSACTION / call_frame_mem + 1) * call_frame_mem;
-
-    // If this assert fails, then adjust grow_value variable.
-    assert!((DEFAULT_MAX_WASM_MEM_PER_TRANSACTION / call_frame_mem + 1) < DEFAULT_MAX_CALL_DEPTH);
-
-    receipt.expect_specific_failure(|e| match e {
-        RuntimeError::ModuleError(ModuleError::TransactionLimitsError(
-            TransactionLimitsError::MaxWasmMemoryExceeded(x),
-        )) => *x == expected_mem,
-        _ => false,
-    })
-}
-
-#[test]
-fn transaction_limit_exceeded_substate_reads_should_fail() {
-    // Arrange
-    let mut test_runner = TestRunner::builder().build();
-    let package_address = test_runner.compile_and_publish("tests/blueprints/transaction_limits");
+        .expect_commit_success()
+        .new_component_addresses()[0];
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
-        .call_function(
-            package_address,
-            "TransactionLimitTest",
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
+        .call_method(
+            component_address,
             "read_kv_stores",
             manifest_args!(200 as u32),
         )
         .build();
 
-    let transactions = TestTransaction::new(manifest, 10, DEFAULT_COST_UNIT_LIMIT);
-    let executable = transactions.get_executable(vec![]);
+    let transactions = TestTransaction::new_from_nonce(manifest, 10);
+    let prepared = transactions.prepare().unwrap();
     let fee_config = FeeReserveConfig::default();
-    let mut execution_config = ExecutionConfig::default();
+    let mut execution_config = ExecutionConfig::for_test_transaction();
     // lower substate reads limit to avoid Fee limit transaction result
-    execution_config.max_substate_reads_per_transaction = 150;
-    let receipt =
-        test_runner.execute_transaction_with_config(executable, &fee_config, &execution_config);
+    execution_config.max_number_of_substates_in_track = 150;
+    let receipt = test_runner.execute_transaction(
+        prepared.get_executable(btreeset!()),
+        fee_config,
+        execution_config,
+    );
 
     // Assert
     receipt.expect_specific_failure(|e| {
         matches!(
             e,
-            RuntimeError::ModuleError(ModuleError::TransactionLimitsError(
-                TransactionLimitsError::MaxSubstateReadCountExceeded
+            RuntimeError::SystemModuleError(SystemModuleError::TransactionLimitsError(
+                TransactionLimitsError::TooManyEntriesInTrack
             ))
         )
     });
 }
 
 #[test]
-fn transaction_limit_exceeded_substate_writes_should_fail() {
+fn transaction_limit_exceeded_substate_write_count_should_fail() {
+    // Arrange
+    let mut test_runner = TestRunner::builder().build();
+    let package_address = test_runner.compile_and_publish("tests/blueprints/transaction_limits");
+    let component_address = test_runner
+        .execute_manifest(
+            ManifestBuilder::new()
+                .lock_fee(test_runner.faucet_component(), 500u32.into())
+                .call_function(
+                    package_address,
+                    "TransactionLimitTest",
+                    "new",
+                    manifest_args!(),
+                )
+                .build(),
+            vec![],
+        )
+        .expect_commit_success()
+        .new_component_addresses()[0];
+
+    // Act
+    let manifest = ManifestBuilder::new()
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
+        .call_method(
+            component_address,
+            "write_kv_stores",
+            manifest_args!(100 as u32),
+        )
+        .build();
+
+    let transactions = TestTransaction::new_from_nonce(manifest, 10);
+    let prepared = transactions.prepare().unwrap();
+    let fee_config = FeeReserveConfig::default();
+    let mut execution_config = ExecutionConfig::for_test_transaction();
+    // lower substate writes limit to avoid Fee limit transaction result
+    execution_config.max_number_of_substates_in_track = 100;
+    let receipt = test_runner.execute_transaction(
+        prepared.get_executable(btreeset!()),
+        fee_config,
+        execution_config,
+    );
+
+    // Assert
+    receipt.expect_specific_failure(|e| {
+        matches!(
+            e,
+            RuntimeError::SystemModuleError(SystemModuleError::TransactionLimitsError(
+                TransactionLimitsError::TooManyEntriesInTrack
+            ))
+        )
+    });
+}
+
+#[test]
+fn test_default_substate_size_limit() {
+    // Arrange
+    let mut test_runner = TestRunner::builder().build();
+    let package_address = test_runner.compile_and_publish("tests/blueprints/transaction_limits");
+    // Act
+    let manifest = ManifestBuilder::new()
+        .lock_fee(test_runner.faucet_component(), 5000u32.into())
+        .call_function(
+            package_address,
+            "TransactionLimitSubstateTest",
+            "write_large_value",
+            manifest_args!(DEFAULT_MAX_SUBSTATE_SIZE - 14),
+        )
+        .build();
+    let receipt = test_runner.execute_manifest(manifest, vec![]);
+
+    // Assert
+    receipt.expect_commit_success();
+
+    // Act #2
+    let manifest = ManifestBuilder::new()
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
+        .call_function(
+            package_address,
+            "TransactionLimitSubstateTest",
+            "write_large_value",
+            manifest_args!(DEFAULT_MAX_SUBSTATE_SIZE - 13),
+        )
+        .build();
+    let receipt = test_runner.execute_manifest(manifest, vec![]);
+
+    // Assert #2
+    receipt.expect_specific_failure(|e| match e {
+        RuntimeError::SystemModuleError(SystemModuleError::TransactionLimitsError(
+            TransactionLimitsError::MaxSubstateSizeExceeded(_),
+        )) => true,
+        _ => false,
+    })
+}
+
+#[test]
+fn test_default_invoke_payload_size_limit() {
+    let mut overhead = Vec::new();
+    let mut encoder = VecEncoder::<ScryptoCustomValueKind>::new(&mut overhead, 100);
+    encoder
+        .write_payload_prefix(SCRYPTO_SBOR_V1_PAYLOAD_PREFIX)
+        .unwrap();
+    encoder.write_value_kind(ValueKind::Tuple).unwrap();
+    encoder.write_size(1).unwrap();
+    encoder.write_value_kind(ValueKind::Array).unwrap();
+    encoder.write_value_kind(ValueKind::U8).unwrap();
+    encoder.write_size(DEFAULT_MAX_INVOKE_INPUT_SIZE).unwrap();
+    let overhead_len = overhead.len();
+    let actor_len = PACKAGE_PACKAGE.as_ref().len() + "InvokeLimitsTest".len() + "callee".len();
+    println!("{:?}", overhead_len);
+    println!("{:?}", actor_len);
+
+    // Arrange
+    let mut test_runner = TestRunner::builder().build();
+    let package_address = test_runner.compile_and_publish("tests/blueprints/transaction_limits");
+    // Act
+    let manifest = ManifestBuilder::new()
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
+        .call_function(
+            package_address,
+            "InvokeLimitsTest",
+            "call",
+            manifest_args!(DEFAULT_MAX_INVOKE_INPUT_SIZE - actor_len - overhead_len),
+        )
+        .build();
+    let receipt = test_runner.execute_manifest(manifest, vec![]);
+
+    // Assert
+    receipt.expect_commit_success();
+
+    // Act #2
+    let manifest = ManifestBuilder::new()
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
+        .call_function(
+            package_address,
+            "InvokeLimitsTest",
+            "call",
+            manifest_args!(DEFAULT_MAX_INVOKE_INPUT_SIZE - actor_len - overhead_len + 1),
+        )
+        .build();
+    let receipt = test_runner.execute_manifest(manifest, vec![]);
+
+    // Assert #2
+    receipt.expect_specific_failure(|e| match e {
+        RuntimeError::SystemModuleError(SystemModuleError::TransactionLimitsError(
+            TransactionLimitsError::MaxInvokePayloadSizeExceeded(_),
+        )) => true,
+        _ => false,
+    })
+}
+
+// FIXME: THIS CAUSES OVERFLOW. INVESTIGATE AND FIX IT!
+#[test]
+#[ignore]
+fn reproduce_crash() {
     // Arrange
     let mut test_runner = TestRunner::builder().build();
     let package_address = test_runner.compile_and_publish("tests/blueprints/transaction_limits");
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(
             package_address,
-            "TransactionLimitTest",
-            "write_kv_stores",
-            manifest_args!(100 as u32),
+            "SborOverflow",
+            "write_large_value",
+            manifest_args!(),
         )
         .build();
-
-    let transactions = TestTransaction::new(manifest, 10, DEFAULT_COST_UNIT_LIMIT);
-    let executable = transactions.get_executable(vec![]);
-    let fee_config = FeeReserveConfig::default();
-    let mut execution_config = ExecutionConfig::default();
-    // lower substate writes limit to avoid Fee limit transaction result
-    execution_config.max_substate_writes_per_transaction = 100;
-    let receipt =
-        test_runner.execute_transaction_with_config(executable, &fee_config, &execution_config);
-
-    // Assert
-    receipt.expect_specific_failure(|e| {
-        matches!(
-            e,
-            RuntimeError::ModuleError(ModuleError::TransactionLimitsError(
-                TransactionLimitsError::MaxSubstateWriteCountExceeded
-            ))
-        )
-    });
+    test_runner.execute_manifest(manifest, vec![]);
 }
 
 #[test]
-fn transaction_limit_exceeded_invoke_input_size_should_fail() {
-    // Arrange
+fn verify_log_size_limit() {
     let mut test_runner = TestRunner::builder().build();
+    let package_address = test_runner.compile_and_publish("./tests/blueprints/transaction_limits");
 
-    // Act
-    let code = wat2wasm(&format!(
-        r#"
-            (module
-                (data (i32.const 0) "{}")
-                (memory $0 64)
-                (export "memory" (memory $0))
-            )
-        "#,
-        "i".repeat(DEFAULT_MAX_INVOKE_INPUT_SIZE)
-    ));
-    assert!(code.len() > DEFAULT_MAX_INVOKE_INPUT_SIZE);
     let manifest = ManifestBuilder::new()
-        .publish_package(
-            code,
-            PackageSchema::default(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-            AccessRulesConfig::new(),
+        .call_function(
+            package_address,
+            "TransactionLimitTest",
+            "emit_log_of_size",
+            manifest_args!(DEFAULT_MAX_LOG_SIZE + 1),
         )
         .build();
+    let receipt = test_runner.execute_manifest_ignoring_fee(manifest, vec![]);
 
-    let receipt = test_runner.execute_manifest(manifest, vec![]);
-
-    // Assert
-    receipt.expect_specific_rejection(|e| {
+    receipt.expect_specific_failure(|e| {
         matches!(
             e,
-            RejectionError::ErrorBeforeFeeLoanRepaid(RuntimeError::ModuleError(
-                ModuleError::TransactionLimitsError(
-                    TransactionLimitsError::MaxInvokePayloadSizeExceeded(_)
-                )
-            ))
+            RuntimeError::SystemModuleError(SystemModuleError::TransactionLimitsError(
+                TransactionLimitsError::LogSizeTooLarge { .. }
+            ),)
         )
     })
 }
 
 #[test]
-fn transaction_limit_exceeded_direct_invoke_input_size_should_fail() {
-    // Arrange
-    let data: Vec<u8> = (0..DEFAULT_MAX_INVOKE_INPUT_SIZE).map(|_| 0).collect();
-    let blueprint_name = "test_blueprint";
-    let function_name = "test_fn";
-    let package_address = PACKAGE_PACKAGE;
+fn verify_event_size_limit() {
+    let mut test_runner = TestRunner::builder().build();
+    let package_address = test_runner.compile_and_publish("./tests/blueprints/transaction_limits");
 
-    // Act
-    let ret =
-        TestRunner::kernel_invoke_function(package_address, blueprint_name, function_name, &data);
+    let manifest = ManifestBuilder::new()
+        .call_function(
+            package_address,
+            "TransactionLimitTest",
+            "emit_event_of_size",
+            manifest_args!(DEFAULT_MAX_EVENT_SIZE + 1),
+        )
+        .build();
+    let receipt = test_runner.execute_manifest_ignoring_fee(manifest, vec![]);
 
-    // Assert
-    let err = ret.expect_err("Expected failure but was success");
+    receipt.expect_specific_failure(|e| {
+        matches!(
+            e,
+            RuntimeError::SystemModuleError(SystemModuleError::TransactionLimitsError(
+                TransactionLimitsError::EventSizeTooLarge { .. }
+            ),)
+        )
+    })
+}
 
-    let size = scrypto_args!(data).len()
-        + blueprint_name.len()
-        + function_name.len()
-        + package_address.size();
+#[test]
+fn verify_panic_size_limit() {
+    let mut test_runner = TestRunner::builder().build();
+    let package_address = test_runner.compile_and_publish("./tests/blueprints/transaction_limits");
 
-    match err {
-        RuntimeError::ModuleError(ModuleError::TransactionLimitsError(
-            TransactionLimitsError::MaxInvokePayloadSizeExceeded(x),
-        )) => assert_eq!(x, size),
-        x => panic!(
-            "Expected specific failure but was different error:\n{:?}",
-            x
-        ),
-    }
+    let manifest = ManifestBuilder::new()
+        .call_function(
+            package_address,
+            "TransactionLimitTest",
+            "panic_of_size",
+            manifest_args!(DEFAULT_MAX_PANIC_MESSAGE_SIZE + 1),
+        )
+        .build();
+    let receipt = test_runner.execute_manifest_ignoring_fee(manifest, vec![]);
+
+    receipt.expect_specific_failure(|e| {
+        matches!(
+            e,
+            RuntimeError::SystemModuleError(SystemModuleError::TransactionLimitsError(
+                TransactionLimitsError::PanicMessageSizeTooLarge { .. }
+            ),)
+        )
+    })
 }

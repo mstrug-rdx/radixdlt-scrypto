@@ -16,18 +16,46 @@ pub struct Hash(pub [u8; Self::LENGTH]);
 impl Hash {
     pub const LENGTH: usize = 32;
 
-    /// Returns the lower 26 bytes.
-    pub fn lower_26_bytes(&self) -> [u8; 26] {
-        let mut result = [0u8; 26];
-        result.copy_from_slice(&self.0[6..32]);
-        result
+    pub fn lower_bytes<const N: usize>(&self) -> [u8; N] {
+        self.0[(Self::LENGTH - N)..Self::LENGTH].try_into().unwrap()
+    }
+}
+
+pub trait IsHash: AsRef<[u8]> + Sized + From<Hash> + Into<Hash> + AsRef<Hash> {
+    fn as_bytes(&self) -> &[u8; Hash::LENGTH] {
+        &<Self as AsRef<Hash>>::as_ref(self).0
     }
 
-    /// Returns the lower 16 bytes.
-    pub fn lower_16_bytes(&self) -> [u8; 16] {
-        let mut result = [0u8; 16];
-        result.copy_from_slice(&self.0[16..32]);
-        result
+    fn as_slice(&self) -> &[u8] {
+        &<Self as AsRef<Hash>>::as_ref(self).0
+    }
+
+    fn as_hash(&self) -> &Hash {
+        &<Self as AsRef<Hash>>::as_ref(self)
+    }
+
+    fn into_bytes(self) -> [u8; Hash::LENGTH] {
+        self.into_hash().0
+    }
+
+    fn into_hash(self) -> Hash {
+        self.into()
+    }
+
+    fn from_bytes(bytes: [u8; Hash::LENGTH]) -> Self {
+        Hash(bytes).into()
+    }
+
+    fn from_hash(hash: Hash) -> Self {
+        hash.into()
+    }
+}
+
+impl IsHash for Hash {}
+
+impl AsRef<Hash> for Hash {
+    fn as_ref(&self) -> &Hash {
+        self
     }
 }
 
@@ -113,6 +141,42 @@ impl fmt::Debug for Hash {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         write!(f, "{}", self)
     }
+}
+
+#[macro_export]
+macro_rules! define_wrapped_hash {
+    ($(#[$docs:meta])* $name:ident) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Sbor)]
+        #[sbor(transparent)]
+        $(#[$docs])*
+        pub struct $name(pub Hash);
+
+        impl AsRef<[u8]> for $name {
+            fn as_ref(&self) -> &[u8] {
+                self.0.as_ref()
+            }
+        }
+
+        impl AsRef<Hash> for $name {
+            fn as_ref(&self) -> &Hash {
+                &self.0
+            }
+        }
+
+        impl From<Hash> for $name {
+            fn from(value: Hash) -> Self {
+                Self(value)
+            }
+        }
+
+        impl From<$name> for Hash {
+            fn from(value: $name) -> Self {
+                value.0
+            }
+        }
+
+        impl IsHash for $name {}
+    };
 }
 
 #[cfg(test)]

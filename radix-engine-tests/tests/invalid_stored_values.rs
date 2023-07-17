@@ -1,4 +1,5 @@
-use radix_engine::errors::{InvalidOwnership, KernelError, RuntimeError};
+use radix_engine::errors::{CallFrameError, KernelError, RuntimeError};
+use radix_engine::kernel::call_frame::{MoveModuleError, PersistNodeError};
 use radix_engine::types::*;
 use scrypto_unit::*;
 use transaction::builder::ManifestBuilder;
@@ -11,7 +12,7 @@ fn stored_bucket_in_committed_component_should_fail() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(
             package_address,
             "InvalidInitStoredBucket",
@@ -22,20 +23,15 @@ fn stored_bucket_in_committed_component_should_fail() {
     let receipt = test_runner.execute_manifest(manifest, vec![]);
 
     // Assert
-    receipt.expect_specific_failure(|e| match e {
-        RuntimeError::KernelError(KernelError::InvalidOwnership(invalid_ownership)) => {
-            if let InvalidOwnership(
-                SubstateOffset::Component(ComponentOffset::State0),
-                RESOURCE_MANAGER_PACKAGE,
-                ..,
-            ) = **invalid_ownership
-            {
-                return true;
-            } else {
-                return false;
-            }
-        }
-        _ => false,
+    receipt.expect_specific_failure(|e| {
+        matches!(
+            e,
+            RuntimeError::KernelError(KernelError::CallFrameError(
+                CallFrameError::MoveModuleError(MoveModuleError::PersistNodeError(
+                    PersistNodeError::CantBeStored(_)
+                ))
+            ))
+        )
     });
 }
 
@@ -47,7 +43,7 @@ fn stored_bucket_in_owned_component_should_fail() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(
             package_address,
             "InvalidStoredBucketInOwnedComponent",
@@ -58,19 +54,14 @@ fn stored_bucket_in_owned_component_should_fail() {
     let receipt = test_runner.execute_manifest(manifest, vec![]);
 
     // Assert
-    receipt.expect_specific_failure(|e| match e {
-        RuntimeError::KernelError(KernelError::InvalidOwnership(invalid_ownership)) => {
-            if let InvalidOwnership(
-                SubstateOffset::Component(ComponentOffset::State0),
-                RESOURCE_MANAGER_PACKAGE,
-                ..,
-            ) = **invalid_ownership
-            {
-                return true;
-            } else {
-                return false;
-            }
-        }
-        _ => false,
+    receipt.expect_specific_failure(|e| {
+        matches!(
+            e,
+            RuntimeError::KernelError(KernelError::CallFrameError(
+                CallFrameError::MoveModuleError(MoveModuleError::PersistNodeError(
+                    PersistNodeError::CantBeStored(_)
+                ))
+            ))
+        )
     });
 }

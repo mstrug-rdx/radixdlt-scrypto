@@ -1,5 +1,5 @@
-#[cfg(not(feature = "alloc"))]
-use sbor::rust::fmt;
+#[cfg(feature = "radix_engine_fuzzing")]
+use arbitrary::{Arbitrary, Result, Unstructured};
 use sbor::rust::prelude::*;
 use sbor::*;
 use utils::copy_u8_array;
@@ -9,83 +9,93 @@ use crate::*;
 
 // NOTE: redundant code to `NonFungibleLocalId` in favor of minimum dependency
 
-pub const NON_FUNGIBLE_LOCAL_ID_MAX_LENGTH: usize = 64;
+pub const MANIFEST_NON_FUNGIBLE_LOCAL_ID_MAX_LENGTH: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ManifestNonFungibleLocalId {
     String(String),
     Integer(u64),
     Bytes(Vec<u8>),
-    UUID(u128),
+    RUID([u8; 32]),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ContentValidationError {
+pub enum ManifestNonFungibleLocalIdValidationError {
     TooLong,
     Empty,
     ContainsBadCharacter(char),
-    NotUuidV4Variant1,
+    NotRuidV4Variant1,
 }
 
 impl ManifestNonFungibleLocalId {
-    pub fn string(s: String) -> Result<Self, ContentValidationError> {
+    pub fn string(s: String) -> Result<Self, ManifestNonFungibleLocalIdValidationError> {
         if s.len() == 0 {
-            return Err(ContentValidationError::Empty);
+            return Err(ManifestNonFungibleLocalIdValidationError::Empty);
         }
-        if s.len() > NON_FUNGIBLE_LOCAL_ID_MAX_LENGTH {
-            return Err(ContentValidationError::TooLong);
+        if s.len() > MANIFEST_NON_FUNGIBLE_LOCAL_ID_MAX_LENGTH {
+            return Err(ManifestNonFungibleLocalIdValidationError::TooLong);
         }
         for char in s.chars() {
             if !matches!(char, '0'..='9' | 'A'..='Z' | 'a'..='z' | '_') {
-                return Err(ContentValidationError::ContainsBadCharacter(char));
+                return Err(ManifestNonFungibleLocalIdValidationError::ContainsBadCharacter(char));
             }
         }
         Ok(Self::String(s))
     }
 
-    pub fn integer(s: u64) -> Result<Self, ContentValidationError> {
+    pub fn integer(s: u64) -> Result<Self, ManifestNonFungibleLocalIdValidationError> {
         Ok(Self::Integer(s))
     }
 
-    pub fn bytes(s: Vec<u8>) -> Result<Self, ContentValidationError> {
+    pub fn bytes(s: Vec<u8>) -> Result<Self, ManifestNonFungibleLocalIdValidationError> {
         if s.len() == 0 {
-            return Err(ContentValidationError::Empty);
+            return Err(ManifestNonFungibleLocalIdValidationError::Empty);
         }
-        if s.len() > NON_FUNGIBLE_LOCAL_ID_MAX_LENGTH {
-            return Err(ContentValidationError::TooLong);
+        if s.len() > MANIFEST_NON_FUNGIBLE_LOCAL_ID_MAX_LENGTH {
+            return Err(ManifestNonFungibleLocalIdValidationError::TooLong);
         }
         Ok(Self::Bytes(s))
     }
 
-    pub fn uuid(s: u128) -> Result<Self, ContentValidationError> {
-        // 0100 - v4
-        // 10 - variant 1
-        if (s & 0x00000000_0000_f000_c000_000000000000u128)
-            != 0x00000000_0000_4000_8000_000000000000u128
-        {
-            return Err(ContentValidationError::NotUuidV4Variant1);
-        }
-        Ok(Self::UUID(s))
+    pub fn ruid(s: [u8; 32]) -> Self {
+        Self::RUID(s.into())
     }
 }
 
-//========
-// error
-//========
+#[cfg(feature = "radix_engine_fuzzing")]
+impl<'a> Arbitrary<'a> for ManifestNonFungibleLocalId {
+    fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self> {
+        let val = match u.int_in_range(0..=3).unwrap() {
+            0 => {
+                let charset: Vec<char> =
+                    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWZYZ012345678989_"
+                        .chars()
+                        .collect();
+                let len: u8 = u
+                    .int_in_range(1..=MANIFEST_NON_FUNGIBLE_LOCAL_ID_MAX_LENGTH as u8)
+                    .unwrap();
+                let s = (0..len).map(|_| *u.choose(&charset[..]).unwrap()).collect();
+                Self::String(s)
+            }
+            1 => {
+                let int = u64::arbitrary(u).unwrap();
+                Self::Integer(int)
+            }
+            2 => {
+                let len: u8 = u
+                    .int_in_range(1..=MANIFEST_NON_FUNGIBLE_LOCAL_ID_MAX_LENGTH as u8)
+                    .unwrap();
+                let bytes = (0..len).map(|_| u8::arbitrary(u).unwrap()).collect();
+                Self::Bytes(bytes)
+            }
+            3 => {
+                let ruid = <[u8; 32]>::arbitrary(u).unwrap();
+                Self::RUID(ruid)
+            }
+            _ => unreachable!(),
+        };
 
-/// Represents an error when parsing ManifestNonFungibleLocalId.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParseManifestNonFungibleLocalIdError {
-    InvalidLength,
-}
-
-#[cfg(not(feature = "alloc"))]
-impl std::error::Error for ParseManifestNonFungibleLocalIdError {}
-
-#[cfg(not(feature = "alloc"))]
-impl fmt::Display for ParseManifestNonFungibleLocalIdError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self)
+        Ok(val)
     }
 }
 
@@ -125,9 +135,9 @@ impl<E: Encoder<ManifestCustomValueKind>> Encode<ManifestCustomValueKind, E>
                 encoder.write_size(v.len())?;
                 encoder.write_slice(v.as_slice())?;
             }
-            Self::UUID(v) => {
+            Self::RUID(v) => {
                 encoder.write_discriminator(3)?;
-                encoder.write_slice(&v.to_be_bytes())?;
+                encoder.write_slice(v.as_slice())?;
             }
         }
         Ok(())
@@ -158,8 +168,7 @@ impl<D: Decoder<ManifestCustomValueKind>> Decode<ManifestCustomValueKind, D>
                 Self::bytes(decoder.read_slice(size)?.to_vec())
                     .map_err(|_| DecodeError::InvalidCustomValue)
             }
-            3 => Self::uuid(u128::from_be_bytes(copy_u8_array(decoder.read_slice(16)?)))
-                .map_err(|_| DecodeError::InvalidCustomValue),
+            3 => Ok(Self::ruid(decoder.read_slice(32)?.try_into().unwrap())),
             _ => Err(DecodeError::InvalidCustomValue),
         }
     }

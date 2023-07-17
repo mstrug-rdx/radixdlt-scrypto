@@ -1,9 +1,9 @@
 use radix_engine::{
     blueprints::resource::BucketError,
-    errors::{ApplicationError, RuntimeError},
+    errors::{ApplicationError, CallFrameError, KernelError, RuntimeError},
+    kernel::call_frame::DropNodeError,
     types::*,
 };
-use radix_engine_interface::blueprints::resource::*;
 use scrypto_unit::*;
 use transaction::builder::ManifestBuilder;
 use utils::ContextualDisplay;
@@ -16,11 +16,11 @@ fn test_bucket_internal(method_name: &str, args: ManifestValue, expect_success: 
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(account, 10.into())
+        .lock_fee(account, 500u32.into())
         .call_function(package_address, "BucketTest", method_name, args)
         .call_method(
             account,
-            "deposit_batch",
+            "try_deposit_batch_or_abort",
             manifest_args!(ManifestExpression::EntireWorktop),
         )
         .build();
@@ -104,14 +104,14 @@ fn test_bucket_of_badges() {
     let package_address = test_runner.compile_and_publish("./tests/blueprints/bucket");
 
     let manifest = ManifestBuilder::new()
-        .lock_fee(account, 10.into())
+        .lock_fee(account, 500u32.into())
         .call_function(package_address, "BadgeTest", "combine", manifest_args!())
         .call_function(package_address, "BadgeTest", "split", manifest_args!())
         .call_function(package_address, "BadgeTest", "borrow", manifest_args!())
         .call_function(package_address, "BadgeTest", "query", manifest_args!())
         .call_method(
             account,
-            "deposit_batch",
+            "try_deposit_batch_or_abort",
             manifest_args!(ManifestExpression::EntireWorktop),
         )
         .build();
@@ -132,9 +132,9 @@ fn test_take_with_invalid_granularity() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(account, 10.into())
+        .lock_fee(account, 500u32.into())
         .withdraw_from_account(account, resource_address, 100.into())
-        .take_from_worktop(resource_address, |builder, bucket_id| {
+        .take_all_from_worktop(resource_address, |builder, bucket_id| {
             let bucket = bucket_id;
             builder.call_function(
                 package_address,
@@ -170,9 +170,9 @@ fn test_take_with_negative_amount() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(account, 10.into())
+        .lock_fee(account, 500u32.into())
         .withdraw_from_account(account, resource_address, 100.into())
-        .take_from_worktop(resource_address, |builder, bucket_id| {
+        .take_all_from_worktop(resource_address, |builder, bucket_id| {
             let bucket = bucket_id;
             builder.call_function(
                 package_address,
@@ -207,16 +207,16 @@ fn create_empty_bucket() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(account, 10.into())
-        .take_from_worktop(RADIX_TOKEN, |builder, bucket_id| {
+        .lock_fee(account, 500u32.into())
+        .take_all_from_worktop(RADIX_TOKEN, |builder, bucket_id| {
             builder.return_to_worktop(bucket_id)
         })
-        .take_from_worktop_by_amount(Decimal::zero(), RADIX_TOKEN, |builder, bucket_id| {
+        .take_from_worktop(RADIX_TOKEN, Decimal::zero(), |builder, bucket_id| {
             builder.return_to_worktop(bucket_id)
         })
-        .take_from_worktop_by_ids(
-            &BTreeSet::new(),
+        .take_non_fungibles_from_worktop(
             non_fungible_resource,
+            &BTreeSet::new(),
             |builder, bucket_id| builder.return_to_worktop(bucket_id),
         )
         .build();
@@ -224,8 +224,89 @@ fn create_empty_bucket() {
         manifest,
         vec![NonFungibleGlobalId::from_public_key(&public_key)],
     );
-    println!("{}", receipt.display(&Bech32Encoder::for_simulator()));
+    println!(
+        "{}",
+        receipt.display(&AddressBech32Encoder::for_simulator())
+    );
 
     // Assert
     receipt.expect_commit_success();
+}
+
+#[test]
+fn test_drop_locked_fungible_bucket() {
+    // Arrange
+    let mut test_runner = TestRunner::builder().build();
+    let (public_key, _, account) = test_runner.new_allocated_account();
+    let package_address = test_runner.compile_and_publish("./tests/blueprints/bucket");
+
+    // Act
+    let manifest = ManifestBuilder::new()
+        .lock_fee(account, 500u32.into())
+        .call_function(
+            package_address,
+            "BucketTest",
+            "drop_locked_fungible_bucket",
+            manifest_args!(),
+        )
+        .call_method(
+            account,
+            "try_deposit_batch_or_abort",
+            manifest_args!(ManifestExpression::EntireWorktop),
+        )
+        .build();
+    let receipt = test_runner.execute_manifest(
+        manifest,
+        vec![NonFungibleGlobalId::from_public_key(&public_key)],
+    );
+    println!("{:?}", receipt);
+
+    // Assert
+    receipt.expect_specific_failure(|e| {
+        matches!(
+            e,
+            RuntimeError::KernelError(KernelError::CallFrameError(CallFrameError::DropNodeError(
+                DropNodeError::NodeBorrowed(_, _)
+            )))
+        )
+    });
+}
+
+#[test]
+fn test_drop_locked_non_fungible_bucket() {
+    // Arrange
+    let mut test_runner = TestRunner::builder().build();
+    let (public_key, _, account) = test_runner.new_allocated_account();
+    let package_address = test_runner.compile_and_publish("./tests/blueprints/bucket");
+
+    // Act
+    let manifest = ManifestBuilder::new()
+        .lock_fee(account, 500u32.into())
+        .call_function(
+            package_address,
+            "BucketTest",
+            "drop_locked_non_fungible_bucket",
+            manifest_args!(),
+        )
+        .call_method(
+            account,
+            "try_deposit_batch_or_abort",
+            manifest_args!(ManifestExpression::EntireWorktop),
+        )
+        .build();
+    let receipt = test_runner.execute_manifest(
+        manifest,
+        vec![NonFungibleGlobalId::from_public_key(&public_key)],
+    );
+    println!("{:?}", receipt);
+
+    // Assert
+    receipt.expect_specific_failure(|e| {
+        matches!(
+            e,
+            RuntimeError::KernelError(KernelError::CallFrameError(CallFrameError::DropNodeError(
+                DropNodeError::NodeBorrowed(_, _)
+            )))
+        )
+    });
 }

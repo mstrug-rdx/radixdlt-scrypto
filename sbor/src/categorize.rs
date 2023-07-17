@@ -14,6 +14,27 @@ pub trait Categorize<X: CustomValueKind> {
     fn value_kind() -> ValueKind<X>;
 }
 
+//=========================
+// OTHER MARKER TRAITS
+//=========================
+
+/// Marker trait for encoding as an Sbor Tuple
+///
+/// Note - we add the X so that this can be safely implemented by different Custom macros without clashing
+/// Otherwise you couldn't implement ManifestSbor and ScryptoSbor on the same type
+pub trait SborTuple<X: CustomValueKind> {
+    fn get_length(&self) -> usize;
+}
+
+/// Marker trait for encoding as an Sbor Enum
+///
+/// Note - we add the X so that this can be safely implemented by different Custom macros without clashing
+/// Otherwise you couldn't implement ManifestSbor and ScryptoSbor on the same type
+pub trait SborEnum<X: CustomValueKind> {
+    fn get_length(&self) -> usize;
+    fn get_discriminator(&self) -> u8;
+}
+
 // Macros for use within this crate
 macro_rules! categorize_simple {
     ($type:ty, $value_kind:expr) => {

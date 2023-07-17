@@ -3,15 +3,16 @@ use std::path::PathBuf;
 
 use radix_engine::errors::{RejectionError, RuntimeError};
 use radix_engine::transaction::AbortReason;
-use radix_engine::types::{AddressError, ComponentAddress, PackageAddress};
+use radix_engine::types::{ComponentAddress, Hash, PackageAddress};
 use radix_engine::utils::ExtractSchemaError;
-use radix_engine::wasm::PrepareError;
+use radix_engine::vm::wasm::PrepareError;
 use radix_engine_interface::blueprints::resource::ParseNonFungibleGlobalIdError;
 use radix_engine_interface::network::ParseNetworkError;
 use sbor::*;
 use transaction::errors::*;
+use transaction::model::PrepareError as TransactionPrepareError;
 
-use crate::ledger::*;
+use crate::ledger::EntityDumpError;
 use crate::utils::*;
 
 /// Represents a resim error.
@@ -24,8 +25,10 @@ pub enum Error {
     HomeDirUnknown,
 
     PackageNotFound(PackageAddress),
+    SchemaNotFound(PackageAddress, Hash),
     BlueprintNotFound(PackageAddress, String),
     ComponentNotFound(ComponentAddress),
+    InstanceSchemaNot(ComponentAddress, u8),
 
     IOError(io::Error),
 
@@ -45,13 +48,15 @@ pub enum Error {
 
     TransactionValidationError(TransactionValidationError),
 
+    TransactionPrepareError(TransactionPrepareError),
+
     TransactionFailed(RuntimeError),
 
     TransactionRejected(RejectionError),
 
     TransactionAborted(AbortReason),
 
-    LedgerDumpError(DisplayError),
+    LedgerDumpError(EntityDumpError),
 
     CompileError(transaction::manifest::CompileError),
 
@@ -61,8 +66,6 @@ pub enum Error {
 
     InvalidPrivateKey,
 
-    AddressError(AddressError),
-
     NonFungibleGlobalIdError(ParseNonFungibleGlobalIdError),
 
     FailedToBuildArguments(BuildCallArgumentError),
@@ -70,4 +73,6 @@ pub enum Error {
     ParseNetworkError(ParseNetworkError),
 
     OwnerBadgeNotSpecified,
+
+    InstructionSchemaValidationError(radix_engine::utils::LocatedInstructionSchemaValidationError),
 }

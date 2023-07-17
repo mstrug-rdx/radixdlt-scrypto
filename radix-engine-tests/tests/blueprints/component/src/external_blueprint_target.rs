@@ -18,13 +18,14 @@ mod external_blueprint_target {
     }
 
     impl ExternalBlueprintTarget {
-        pub fn create() -> ComponentAddress {
+        pub fn create() -> Global<ExternalBlueprintTarget> {
             Self {
                 some_field: ExtraStruct {
                     field_one: String::from("test_1"),
                 },
             }
             .instantiate()
+            .prepare_to_globalize(OwnerRole::None)
             .globalize()
         }
 

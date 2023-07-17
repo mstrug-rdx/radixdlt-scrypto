@@ -1,54 +1,50 @@
-use crate::engine::scrypto_env::ScryptoEnv;
-use crate::modules::AttachedMetadata;
-use crate::runtime::*;
-use radix_engine_interface::api::types::*;
-use radix_engine_interface::api::ClientObjectApi;
+use super::HasTypeInfo;
+use crate::prelude::{Global, HasStub, ObjectStub, ObjectStubHandle};
+use radix_engine_common::prelude::PACKAGE_PACKAGE;
 use radix_engine_interface::blueprints::package::{
-    PackageClaimRoyaltyInput, PackageSetRoyaltyConfigInput, PACKAGE_CLAIM_ROYALTY_IDENT,
-    PACKAGE_SET_ROYALTY_CONFIG_IDENT,
+    PackageClaimRoyaltiesInput, PACKAGE_BLUEPRINT, PACKAGE_CLAIM_ROYALTIES_IDENT,
 };
 use radix_engine_interface::blueprints::resource::Bucket;
-use radix_engine_interface::data::scrypto::{scrypto_decode, scrypto_encode, ScryptoDecode};
-use sbor::rust::collections::BTreeMap;
-use sbor::rust::fmt::Debug;
-use sbor::rust::string::String;
-use sbor::rust::vec::Vec;
+use radix_engine_interface::types::*;
+use radix_engine_interface::*;
+use sbor::rust::prelude::*;
 
-/// Represents a published package.
-#[derive(Debug)]
-pub struct BorrowedPackage(pub PackageAddress);
+pub type Package = Global<PackageStub>;
 
-impl BorrowedPackage {
-    /// Invokes a function on this package.
-    pub fn call<T: ScryptoDecode>(&self, blueprint_name: &str, function: &str, args: Vec<u8>) -> T {
-        Runtime::call_function(self.0, blueprint_name, function, args)
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct PackageStub(pub ObjectStubHandle);
+
+impl HasStub for PackageStub {
+    type Stub = Self;
+}
+
+impl HasTypeInfo for PackageStub {
+    const PACKAGE_ADDRESS: Option<PackageAddress> = Some(PACKAGE_PACKAGE);
+
+    const BLUEPRINT_NAME: &'static str = PACKAGE_BLUEPRINT;
+
+    const OWNED_TYPE_NAME: &'static str = "OwnedPackage";
+
+    const GLOBAL_TYPE_NAME: &'static str = "GlobalPackage";
+}
+
+impl ObjectStub for PackageStub {
+    type AddressType = PackageAddress;
+
+    fn new(handle: ObjectStubHandle) -> Self {
+        Self(handle)
     }
 
-    pub fn metadata(&self) -> AttachedMetadata {
-        AttachedMetadata(self.0.into())
+    fn handle(&self) -> &ObjectStubHandle {
+        &self.0
     }
+}
 
-    pub fn set_royalty_config(&self, royalty_config: BTreeMap<String, RoyaltyConfig>) {
-        ScryptoEnv
-            .call_module_method(
-                RENodeId::GlobalObject(self.0.into()),
-                NodeModuleId::SELF,
-                PACKAGE_SET_ROYALTY_CONFIG_IDENT,
-                scrypto_encode(&PackageSetRoyaltyConfigInput { royalty_config }).unwrap(),
-            )
-            .unwrap();
-    }
-
-    pub fn claim_royalty(&self) -> Bucket {
-        let rtn = ScryptoEnv
-            .call_module_method(
-                RENodeId::GlobalObject(self.0.into()),
-                NodeModuleId::SELF,
-                PACKAGE_CLAIM_ROYALTY_IDENT,
-                scrypto_encode(&PackageClaimRoyaltyInput {}).unwrap(),
-            )
-            .unwrap();
-
-        scrypto_decode(&rtn).unwrap()
+impl PackageStub {
+    pub fn claim_royalties(&self) -> Bucket {
+        self.call(
+            PACKAGE_CLAIM_ROYALTIES_IDENT,
+            &PackageClaimRoyaltiesInput {},
+        )
     }
 }

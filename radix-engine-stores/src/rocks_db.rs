@@ -1,210 +1,104 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
-
-use radix_engine::kernel::interpreters::ScryptoInterpreter;
-use radix_engine::system::node_substates::PersistedSubstate;
-use radix_engine::types::*;
-use radix_engine::{ledger::*, wasm::WasmEngine};
-use radix_engine_interface::api::types::RENodeId;
-use radix_engine_interface::data::scrypto::ScryptoDecode;
+use itertools::Itertools;
+use radix_engine_store_interface::interface::*;
+pub use rocksdb::{BlockBasedOptions, LogLevel, Options};
 use rocksdb::{DBWithThreadMode, Direction, IteratorMode, SingleThreaded, DB};
+use sbor::rust::prelude::*;
+use std::path::PathBuf;
+use utils::copy_u8_array;
 
-pub struct RadixEngineDB {
+pub struct RocksdbSubstateStore {
     db: DBWithThreadMode<SingleThreaded>,
 }
 
-impl RadixEngineDB {
-    pub fn new(root: PathBuf) -> Self {
-        let db = DB::open_default(root.as_path()).unwrap();
+impl RocksdbSubstateStore {
+    pub fn standard(root: PathBuf) -> Self {
+        let db = DB::open_default(root.as_path()).expect("IO Error");
+
         Self { db }
     }
+    pub fn with_options(options: &Options, root: PathBuf) -> Self {
+        let db = DB::open(options, root.as_path()).expect("IO Error");
 
-    pub fn with_bootstrap<W: WasmEngine>(
-        root: PathBuf,
-        scrypto_interpreter: &ScryptoInterpreter<W>,
-    ) -> Self {
-        let mut substate_store = Self::new(root);
-        bootstrap(&mut substate_store, scrypto_interpreter);
-        substate_store
+        Self { db }
     }
+}
 
-    pub fn list_packages(&self) -> Vec<PackageAddress> {
-        let start = &scrypto_encode(&SubstateId(
-            RENodeId::GlobalObject(PackageAddress::Normal([0; 26]).into()),
-            NodeModuleId::TypeInfo,
-            SubstateOffset::TypeInfo(TypeInfoOffset::TypeInfo),
-        ))
-        .unwrap();
-        let end = &scrypto_encode(&SubstateId(
-            RENodeId::GlobalObject(PackageAddress::Normal([255; 26]).into()),
-            NodeModuleId::TypeInfo,
-            SubstateOffset::TypeInfo(TypeInfoOffset::TypeInfo),
-        ))
-        .unwrap();
-        let substate_ids: Vec<SubstateId> = self.list_items(start, end);
-
-        let mut addresses = Vec::new();
-        for substate_id in substate_ids {
-            if let SubstateId(
-                RENodeId::GlobalObject(Address::Package(package_address)),
-                NodeModuleId::TypeInfo,
-                SubstateOffset::TypeInfo(TypeInfoOffset::TypeInfo),
-            ) = substate_id
-            {
-                addresses.push(package_address);
-            }
-        }
-
-        addresses
-    }
-
-    fn list_components_helper(
+impl SubstateDatabase for RocksdbSubstateStore {
+    fn get_substate(
         &self,
-        start: ComponentAddress,
-        end: ComponentAddress,
-    ) -> Vec<ComponentAddress> {
-        let start = &scrypto_encode(&SubstateId(
-            RENodeId::GlobalObject(Address::Component(start)),
-            NodeModuleId::TypeInfo,
-            SubstateOffset::TypeInfo(TypeInfoOffset::TypeInfo),
-        ))
-        .unwrap();
-        let end = &scrypto_encode(&SubstateId(
-            RENodeId::GlobalObject(Address::Component(end)),
-            NodeModuleId::TypeInfo,
-            SubstateOffset::TypeInfo(TypeInfoOffset::TypeInfo),
-        ))
-        .unwrap();
-        let substate_ids: Vec<SubstateId> = self.list_items(start, end);
-        let mut addresses = Vec::new();
-        for substate_id in substate_ids {
-            if let SubstateId(
-                RENodeId::GlobalObject(Address::Component(component_address)),
-                NodeModuleId::TypeInfo,
-                SubstateOffset::TypeInfo(TypeInfoOffset::TypeInfo),
-            ) = substate_id
-            {
-                addresses.push(component_address);
-            }
-        }
-
-        addresses
+        partition_key: &DbPartitionKey,
+        sort_key: &DbSortKey,
+    ) -> Option<DbSubstateValue> {
+        let key_bytes = encode_to_rocksdb_bytes(partition_key, sort_key);
+        self.db.get(&key_bytes).expect("IO Error")
     }
 
-    pub fn list_components(&self) -> Vec<ComponentAddress> {
-        let mut addresses = Vec::new();
-        addresses.extend(self.list_components_helper(
-            ComponentAddress::Account([0u8; 26]),
-            ComponentAddress::Account([255u8; 26]),
-        ));
-        addresses.extend(self.list_components_helper(
-            ComponentAddress::Normal([0u8; 26]),
-            ComponentAddress::Normal([255u8; 26]),
-        ));
-        addresses
-    }
-
-    pub fn list_resource_managers(&self) -> Vec<ResourceAddress> {
-        let start = &scrypto_encode(&SubstateId(
-            RENodeId::GlobalObject(ResourceAddress::Fungible([0; 26]).into()),
-            NodeModuleId::TypeInfo,
-            SubstateOffset::TypeInfo(TypeInfoOffset::TypeInfo),
-        ))
-        .unwrap();
-        let end = &scrypto_encode(&SubstateId(
-            RENodeId::GlobalObject(ResourceAddress::NonFungible([255; 26]).into()),
-            NodeModuleId::TypeInfo,
-            SubstateOffset::TypeInfo(TypeInfoOffset::TypeInfo),
-        ))
-        .unwrap();
-        let substate_ids: Vec<SubstateId> = self.list_items(start, end);
-        let mut addresses = Vec::new();
-        for substate_id in substate_ids {
-            if let SubstateId(
-                RENodeId::GlobalObject(Address::Resource(resource_address)),
-                NodeModuleId::TypeInfo,
-                SubstateOffset::TypeInfo(TypeInfoOffset::TypeInfo),
-            ) = substate_id
-            {
-                addresses.push(resource_address);
-            }
-        }
-
-        addresses
-    }
-
-    fn list_items<T: ScryptoDecode>(&self, start: &[u8], inclusive_end: &[u8]) -> Vec<T> {
-        let mut iter = self
+    fn list_entries(
+        &self,
+        partition_key: &DbPartitionKey,
+    ) -> Box<dyn Iterator<Item = PartitionEntry> + '_> {
+        let partition_key = partition_key.clone();
+        let start_key_bytes = encode_to_rocksdb_bytes(&partition_key, &DbSortKey(vec![]));
+        let iter = self
             .db
-            .iterator(IteratorMode::From(start, Direction::Forward));
-        let mut items = Vec::new();
-        while let Some(kv) = iter.next() {
-            let (key, _value) = kv.unwrap();
-            if key.as_ref() > inclusive_end {
-                break;
-            }
-            if key.len() == start.len() {
-                items.push(scrypto_decode(key.as_ref()).unwrap());
-            }
-        }
-        items
-    }
+            .iterator(IteratorMode::From(&start_key_bytes, Direction::Forward))
+            .map(|kv| {
+                let (iter_key_bytes, iter_value) = kv.as_ref().unwrap();
+                let iter_key = decode_from_rocksdb_bytes(iter_key_bytes);
+                (iter_key, iter_value.to_vec())
+            })
+            .take_while(move |((iter_partition_key, _), _)| *iter_partition_key == partition_key)
+            .map(|((_, iter_sort_key), iter_value)| (iter_sort_key, iter_value.to_vec()));
 
-    fn read(&self, substate_id: &SubstateId) -> Option<Vec<u8>> {
-        // TODO: Use get_pinned
-        self.db
-            .get(scrypto_encode(substate_id).expect("Could not encode substate id"))
-            .unwrap()
-    }
-
-    fn write(&self, substate_id: SubstateId, value: Vec<u8>) {
-        self.db
-            .put(
-                scrypto_encode(&substate_id).expect("Could not encode substate id"),
-                value,
-            )
-            .unwrap();
+        Box::new(iter)
     }
 }
 
-impl QueryableSubstateStore for RadixEngineDB {
-    fn get_kv_store_entries(
-        &self,
-        kv_store_id: &KeyValueStoreId,
-    ) -> HashMap<Vec<u8>, PersistedSubstate> {
-        let mut iter = self.db.iterator(IteratorMode::Start);
-        let mut items = HashMap::new();
-        while let Some(kv) = iter.next() {
-            let (key, value) = kv.unwrap();
-            let substate_id: SubstateId = scrypto_decode(&key).unwrap();
-            if let SubstateId(
-                RENodeId::KeyValueStore(id),
-                NodeModuleId::SELF,
-                SubstateOffset::KeyValueStore(KeyValueStoreOffset::Entry(entry_id)),
-            ) = substate_id
-            {
-                let substate: OutputValue = scrypto_decode(&value.to_vec()).unwrap();
-                if id == *kv_store_id {
-                    items.insert(entry_id, substate.substate);
-                }
+impl CommittableSubstateDatabase for RocksdbSubstateStore {
+    fn commit(&mut self, database_updates: &DatabaseUpdates) {
+        for (patrition_key, partition_updates) in database_updates {
+            for (sort_key, database_update) in partition_updates {
+                let key_bytes = encode_to_rocksdb_bytes(patrition_key, sort_key);
+                let result = match database_update {
+                    DatabaseUpdate::Set(value_bytes) => self.db.put(key_bytes, value_bytes),
+                    DatabaseUpdate::Delete => self.db.delete(key_bytes),
+                };
+                result.expect("IO error");
             }
         }
-        items
     }
 }
 
-impl ReadableSubstateStore for RadixEngineDB {
-    fn get_substate(&self, substate_id: &SubstateId) -> Option<OutputValue> {
-        self.read(substate_id)
-            .map(|b| scrypto_decode(&b).expect("Could not decode persisted substate"))
+impl ListableSubstateDatabase for RocksdbSubstateStore {
+    fn list_partition_keys(&self) -> Box<dyn Iterator<Item = DbPartitionKey> + '_> {
+        Box::new(
+            self.db
+                .iterator(IteratorMode::Start)
+                .map(|kv| {
+                    let (iter_key_bytes, _) = kv.as_ref().unwrap();
+                    let (iter_key, _) = decode_from_rocksdb_bytes(iter_key_bytes);
+                    iter_key
+                })
+                // Rocksdb iterator returns sorted entries, so ok to to eliminate
+                // duplicates with dedup()
+                .dedup(),
+        )
     }
 }
 
-impl WriteableSubstateStore for RadixEngineDB {
-    fn put_substate(&mut self, substate_id: SubstateId, substate: OutputValue) {
-        self.write(
-            substate_id,
-            scrypto_encode(&substate).expect("Could not encode substate for persistence"),
-        );
-    }
+fn encode_to_rocksdb_bytes(partition_key: &DbPartitionKey, sort_key: &DbSortKey) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    buffer.extend(u32::try_from(partition_key.0.len()).unwrap().to_be_bytes());
+    buffer.extend(partition_key.0.clone());
+    buffer.extend(sort_key.0.clone());
+    buffer
+}
+
+fn decode_from_rocksdb_bytes(buffer: &[u8]) -> DbSubstateKey {
+    let partition_key_len =
+        usize::try_from(u32::from_be_bytes(copy_u8_array(&buffer[..4]))).unwrap();
+    let sort_key_offset = 4 + partition_key_len;
+    let partition_key = DbPartitionKey(buffer[4..sort_key_offset].to_vec());
+    let sort_key = DbSortKey(buffer[sort_key_offset..].to_vec());
+    (partition_key, sort_key)
 }

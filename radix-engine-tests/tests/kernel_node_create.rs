@@ -1,4 +1,4 @@
-use radix_engine::errors::{RuntimeError, SubstateValidationError, SystemError};
+use radix_engine::errors::{RuntimeError, SystemError};
 use radix_engine::types::*;
 use scrypto_unit::*;
 use transaction::builder::ManifestBuilder;
@@ -11,7 +11,7 @@ fn should_not_be_able_to_node_create_with_invalid_blueprint() {
 
     // Act
     let manifest = ManifestBuilder::new()
-        .lock_fee(FAUCET_COMPONENT, 10.into())
+        .lock_fee(test_runner.faucet_component(), 500u32.into())
         .call_function(
             package_address,
             "NodeCreate",
@@ -23,13 +23,7 @@ fn should_not_be_able_to_node_create_with_invalid_blueprint() {
 
     // Assert
     receipt.expect_specific_failure(|e| match e {
-        RuntimeError::SystemError(SystemError::SubstateValidationError(err)) => {
-            if let SubstateValidationError::BlueprintNotFound(_) = **err {
-                return true;
-            } else {
-                return false;
-            }
-        }
+        RuntimeError::SystemError(SystemError::BlueprintDoesNotExist(..)) => true,
         _ => false,
     });
 }

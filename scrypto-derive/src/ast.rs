@@ -2,8 +2,8 @@ use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::token::{Brace, Paren};
 use syn::{
-    braced, parenthesized, Attribute, Ident, ItemImpl, ItemStruct, ItemUse, Path, Result, Token,
-    Visibility,
+    braced, parenthesized, Attribute, Ident, ItemConst, ItemImpl, ItemMacro, ItemStruct, ItemUse,
+    Path, Result, Token, Visibility,
 };
 
 /// Represents a blueprint which is a module with an optional set of attributes
@@ -28,6 +28,8 @@ pub struct BlueprintMod {
     pub module_ident: Ident,
     pub brace: Brace,
     pub use_statements: Vec<ItemUse>,
+    pub const_statements: Vec<ItemConst>,
+    pub macro_statements: Vec<ItemMacro>,
     pub structure: ItemStruct,
     pub implementation: ItemImpl,
     pub semi: Option<Token![;]>,
@@ -48,6 +50,26 @@ impl Parse for BlueprintMod {
             }
             use_statements
         };
+        let (const_statements, macro_statements) = {
+            let mut const_statements = Vec::new();
+            let mut macro_statements = Vec::new();
+            loop {
+                let is_const = content.peek(Token![const]);
+                let is_macro = content.peek2(Token![!]);
+                if !is_const && !is_macro {
+                    break;
+                }
+                if is_const {
+                    const_statements.push(content.call(ItemConst::parse)?)
+                }
+                if is_macro {
+                    macro_statements.push(content.call(ItemMacro::parse)?)
+                }
+            }
+
+            (const_statements, macro_statements)
+        };
+
         let structure = content.parse()?;
         let implementation = content.parse()?;
         let semi = input.parse()?;
@@ -58,6 +80,8 @@ impl Parse for BlueprintMod {
             module_ident,
             brace,
             use_statements,
+            const_statements,
+            macro_statements,
             structure,
             implementation,
             semi,

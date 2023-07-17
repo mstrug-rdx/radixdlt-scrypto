@@ -1,41 +1,62 @@
 use crate::data::*;
-use crate::errors::*;
 use crate::model::*;
 use crate::validation::*;
-use radix_engine_interface::address::{AddressError, Bech32Encoder};
+use radix_engine_common::native_addresses::PACKAGE_PACKAGE;
+use radix_engine_common::prelude::CONSENSUS_MANAGER;
+use radix_engine_interface::address::AddressBech32Encoder;
+use radix_engine_interface::api::node_modules::auth::{
+    ACCESS_RULES_LOCK_OWNER_ROLE_IDENT, ACCESS_RULES_LOCK_ROLE_IDENT,
+    ACCESS_RULES_SET_AND_LOCK_OWNER_ROLE_IDENT, ACCESS_RULES_SET_AND_LOCK_ROLE_IDENT,
+    ACCESS_RULES_SET_OWNER_ROLE_IDENT, ACCESS_RULES_SET_ROLE_IDENT,
+};
+use radix_engine_interface::api::node_modules::metadata::METADATA_SET_IDENT;
+use radix_engine_interface::api::node_modules::metadata::{
+    METADATA_LOCK_IDENT, METADATA_REMOVE_IDENT,
+};
+use radix_engine_interface::api::node_modules::royalty::{
+    COMPONENT_ROYALTY_CLAIM_ROYALTIES_IDENT, COMPONENT_ROYALTY_LOCK_ROYALTY_IDENT,
+    COMPONENT_ROYALTY_SET_ROYALTY_IDENT,
+};
 use radix_engine_interface::blueprints::access_controller::{
     ACCESS_CONTROLLER_BLUEPRINT, ACCESS_CONTROLLER_CREATE_GLOBAL_IDENT,
 };
-use radix_engine_interface::blueprints::account::{ACCOUNT_BLUEPRINT, ACCOUNT_CREATE_GLOBAL_IDENT};
-use radix_engine_interface::blueprints::epoch_manager::EPOCH_MANAGER_CREATE_VALIDATOR_IDENT;
-use radix_engine_interface::blueprints::identity::{IDENTITY_BLUEPRINT, IDENTITY_CREATE_IDENT};
+use radix_engine_interface::blueprints::account::{
+    ACCOUNT_BLUEPRINT, ACCOUNT_CREATE_ADVANCED_IDENT, ACCOUNT_CREATE_IDENT,
+};
+use radix_engine_interface::blueprints::consensus_manager::CONSENSUS_MANAGER_CREATE_VALIDATOR_IDENT;
+use radix_engine_interface::blueprints::identity::{
+    IDENTITY_BLUEPRINT, IDENTITY_CREATE_ADVANCED_IDENT, IDENTITY_CREATE_IDENT,
+};
+use radix_engine_interface::blueprints::package::PACKAGE_BLUEPRINT;
+use radix_engine_interface::blueprints::package::PACKAGE_CLAIM_ROYALTIES_IDENT;
+use radix_engine_interface::blueprints::package::PACKAGE_PUBLISH_WASM_ADVANCED_IDENT;
+use radix_engine_interface::blueprints::package::PACKAGE_PUBLISH_WASM_IDENT;
 use radix_engine_interface::blueprints::resource::{
     FUNGIBLE_RESOURCE_MANAGER_BLUEPRINT, FUNGIBLE_RESOURCE_MANAGER_CREATE_IDENT,
     FUNGIBLE_RESOURCE_MANAGER_CREATE_WITH_INITIAL_SUPPLY_IDENT,
-    NON_FUNGIBLE_RESOURCE_MANAGER_BLUEPRINT, NON_FUNGIBLE_RESOURCE_MANAGER_CREATE_IDENT,
+    FUNGIBLE_RESOURCE_MANAGER_MINT_IDENT, NON_FUNGIBLE_RESOURCE_MANAGER_BLUEPRINT,
+    NON_FUNGIBLE_RESOURCE_MANAGER_CREATE_IDENT,
     NON_FUNGIBLE_RESOURCE_MANAGER_CREATE_WITH_INITIAL_SUPPLY_IDENT,
+    NON_FUNGIBLE_RESOURCE_MANAGER_MINT_IDENT, NON_FUNGIBLE_RESOURCE_MANAGER_MINT_RUID_IDENT,
+    VAULT_FREEZE_IDENT, VAULT_RECALL_IDENT, VAULT_UNFREEZE_IDENT,
 };
 use radix_engine_interface::constants::{
-    ACCESS_CONTROLLER_PACKAGE, ACCOUNT_PACKAGE, EPOCH_MANAGER, IDENTITY_PACKAGE,
-    RESOURCE_MANAGER_PACKAGE,
+    ACCESS_CONTROLLER_PACKAGE, ACCOUNT_PACKAGE, IDENTITY_PACKAGE, RESOURCE_PACKAGE,
 };
 use radix_engine_interface::data::manifest::model::*;
 use radix_engine_interface::data::manifest::*;
 use radix_engine_interface::network::NetworkDefinition;
 use radix_engine_interface::*;
-use sbor::rust::collections::*;
-use sbor::rust::fmt;
+use sbor::rust::prelude::*;
 use sbor::*;
-use utils::ContextualDisplay;
 
 #[derive(Debug, Clone)]
 pub enum DecompileError {
-    InvalidAddress(AddressError),
     InvalidArguments,
     EncodeError(EncodeError),
     DecodeError(DecodeError),
-    IdAllocationError(ManifestIdAllocationError),
     FormattingError(fmt::Error),
+    ValueConversionError(RustToManifestValueError),
 }
 
 impl From<EncodeError> for DecompileError {
@@ -56,53 +77,97 @@ impl From<fmt::Error> for DecompileError {
     }
 }
 
+impl From<RustToManifestValueError> for DecompileError {
+    fn from(error: RustToManifestValueError) -> Self {
+        Self::ValueConversionError(error)
+    }
+}
+
+#[derive(Default)]
 pub struct DecompilationContext<'a> {
-    pub bech32_encoder: Option<&'a Bech32Encoder>,
+    pub address_bech32_encoder: Option<&'a AddressBech32Encoder>,
     pub id_allocator: ManifestIdAllocator,
-    pub bucket_names: HashMap<ManifestBucket, String>,
-    pub proof_names: HashMap<ManifestProof, String>,
+    pub bucket_names: NonIterMap<ManifestBucket, String>,
+    pub proof_names: NonIterMap<ManifestProof, String>,
+    pub address_reservation_names: NonIterMap<ManifestAddressReservation, String>,
+    pub address_names: NonIterMap<u32, String>,
 }
 
 impl<'a> DecompilationContext<'a> {
-    pub fn new(bech32_encoder: &'a Bech32Encoder) -> Self {
+    pub fn new(address_bech32_encoder: &'a AddressBech32Encoder) -> Self {
         Self {
-            bech32_encoder: Some(bech32_encoder),
-            id_allocator: ManifestIdAllocator::new(),
-            bucket_names: HashMap::<ManifestBucket, String>::new(),
-            proof_names: HashMap::<ManifestProof, String>::new(),
+            address_bech32_encoder: Some(address_bech32_encoder),
+            ..Default::default()
         }
     }
 
-    pub fn new_with_optional_network(bech32_encoder: Option<&'a Bech32Encoder>) -> Self {
+    pub fn new_with_optional_network(
+        address_bech32_encoder: Option<&'a AddressBech32Encoder>,
+    ) -> Self {
         Self {
-            bech32_encoder,
-            id_allocator: ManifestIdAllocator::new(),
-            bucket_names: HashMap::<ManifestBucket, String>::new(),
-            proof_names: HashMap::<ManifestProof, String>::new(),
+            address_bech32_encoder,
+            ..Default::default()
         }
     }
 
-    pub fn for_value_display(&'a self) -> ManifestValueDisplayContext<'a> {
-        ManifestValueDisplayContext::with_bech32_and_names(
-            self.bech32_encoder,
+    pub fn for_value_display(&'a self) -> ManifestDecompilationDisplayContext<'a> {
+        ManifestDecompilationDisplayContext::with_bech32_and_names(
+            self.address_bech32_encoder,
             &self.bucket_names,
             &self.proof_names,
+            &self.address_reservation_names,
+            &self.address_names,
         )
+        .with_multi_line(4, 4)
+    }
+
+    pub fn new_bucket(&mut self) -> ManifestBucket {
+        let id = self.id_allocator.new_bucket_id();
+        let name = format!("bucket{}", self.bucket_names.len() + 1);
+        self.bucket_names.insert(id, name.clone());
+        id
+    }
+
+    pub fn new_proof(&mut self) -> ManifestProof {
+        let id = self.id_allocator.new_proof_id();
+        let name = format!("proof{}", self.proof_names.len() + 1);
+        self.proof_names.insert(id, name.clone());
+        id
+    }
+
+    pub fn new_address_reservation(&mut self) -> ManifestAddressReservation {
+        let id = self.id_allocator.new_address_reservation_id();
+        let name = format!("reservation{}", self.address_reservation_names.len() + 1);
+        self.address_reservation_names.insert(id, name.clone());
+        id
+    }
+
+    pub fn new_address(&mut self) -> ManifestAddress {
+        let id = self.id_allocator.new_address_id();
+        let name = format!("address{}", self.address_names.len() + 1);
+        self.address_names.insert(id, name.clone());
+        ManifestAddress::Named(id)
+    }
+
+    /// Allocate addresses before transaction, for system transactions only.
+    pub fn preallocate_addresses(&mut self, n: u32) {
+        for _ in 0..n {
+            self.new_address();
+        }
     }
 }
 
 /// Contract: if the instructions are from a validated notarized transaction, no error
 /// should be returned.
 pub fn decompile(
-    instructions: &[Instruction],
+    instructions: &[InstructionV1],
     network: &NetworkDefinition,
 ) -> Result<String, DecompileError> {
-    let bech32_encoder = Bech32Encoder::new(network);
+    let address_bech32_encoder = AddressBech32Encoder::new(network);
     let mut buf = String::new();
-    let mut context = DecompilationContext::new(&bech32_encoder);
+    let mut context = DecompilationContext::new(&address_bech32_encoder);
     for inst in instructions {
         decompile_instruction(&mut buf, inst, &mut context)?;
-        buf.push('\n');
     }
 
     Ok(buf)
@@ -110,475 +175,493 @@ pub fn decompile(
 
 pub fn decompile_instruction<F: fmt::Write>(
     f: &mut F,
-    instruction: &Instruction,
+    instruction: &InstructionV1,
     context: &mut DecompilationContext,
 ) -> Result<(), DecompileError> {
-    match instruction {
-        Instruction::TakeFromWorktop { resource_address } => {
-            let bucket_id = context
-                .id_allocator
-                .new_bucket_id()
-                .map_err(DecompileError::IdAllocationError)?;
-            let name = format!("bucket{}", context.bucket_names.len() + 1);
-            write!(
-                f,
-                "TAKE_FROM_WORKTOP\n    Address(\"{}\")\n    Bucket(\"{}\");",
-                resource_address.display(context.bech32_encoder),
-                name
-            )?;
-            context.bucket_names.insert(bucket_id, name);
-        }
-        Instruction::TakeFromWorktopByAmount {
-            amount,
+    let (display_name, display_parameters) = match instruction {
+        InstructionV1::TakeFromWorktop {
             resource_address,
+            amount,
         } => {
-            let bucket_id = context
-                .id_allocator
-                .new_bucket_id()
-                .map_err(DecompileError::IdAllocationError)?;
-            let name = format!("bucket{}", context.bucket_names.len() + 1);
-            context.bucket_names.insert(bucket_id, name.clone());
-            write!(
-                f,
-                "TAKE_FROM_WORKTOP_BY_AMOUNT\n    Decimal(\"{}\")\n    Address(\"{}\")\n    Bucket(\"{}\");",
-                amount,
-                resource_address.display(context.bech32_encoder),
-                name
-            )?;
+            let bucket = context.new_bucket();
+            (
+                "TAKE_FROM_WORKTOP",
+                to_manifest_value(&(resource_address, amount, bucket))?,
+            )
         }
-        Instruction::TakeFromWorktopByIds {
+        InstructionV1::TakeNonFungiblesFromWorktop {
             ids,
             resource_address,
         } => {
-            let bucket_id = context
-                .id_allocator
-                .new_bucket_id()
-                .map_err(DecompileError::IdAllocationError)?;
-            let name = format!("bucket{}", context.bucket_names.len() + 1);
-            context.bucket_names.insert(bucket_id, name.clone());
-            write!(
-                f,
-                "TAKE_FROM_WORKTOP_BY_IDS\n    Array<NonFungibleLocalId>({})\n    Address(\"{}\")\n    Bucket(\"{}\");",
-                ids.iter()
-                    .map(|k| ManifestCustomValue::NonFungibleLocalId(from_non_fungible_local_id(k.clone())).to_string(context.for_value_display()))
-                    .collect::<Vec<String>>()
-                    .join(", "),
-                resource_address.display(context.bech32_encoder),
-                name
-            )?;
+            let bucket = context.new_bucket();
+            (
+                "TAKE_NON_FUNGIBLES_FROM_WORKTOP",
+                to_manifest_value(&(resource_address, ids, bucket))?,
+            )
         }
-        Instruction::ReturnToWorktop { bucket_id } => {
-            write!(
-                f,
-                "RETURN_TO_WORKTOP\n    Bucket({});",
-                context
-                    .bucket_names
-                    .get(bucket_id)
-                    .map(|name| format!("\"{}\"", name))
-                    .unwrap_or(format!("{}u32", bucket_id.0))
-            )?;
+        InstructionV1::TakeAllFromWorktop { resource_address } => {
+            let bucket = context.new_bucket();
+            (
+                "TAKE_ALL_FROM_WORKTOP",
+                to_manifest_value(&(resource_address, bucket))?,
+            )
         }
-        Instruction::AssertWorktopContains { resource_address } => {
-            write!(
-                f,
-                "ASSERT_WORKTOP_CONTAINS\n    Address(\"{}\");",
-                resource_address.display(context.bech32_encoder)
-            )?;
+        InstructionV1::ReturnToWorktop { bucket_id } => {
+            ("RETURN_TO_WORKTOP", to_manifest_value(&(bucket_id,))?)
         }
-        Instruction::AssertWorktopContainsByAmount {
+        InstructionV1::AssertWorktopContainsAny { resource_address } => (
+            "ASSERT_WORKTOP_CONTAINS_ANY",
+            to_manifest_value(&(resource_address))?,
+        ),
+        InstructionV1::AssertWorktopContains {
             amount,
             resource_address,
-        } => {
-            write!(
-                f,
-                "ASSERT_WORKTOP_CONTAINS_BY_AMOUNT\n    Decimal(\"{}\")\n    Address(\"{}\");",
-                amount,
-                resource_address.display(context.bech32_encoder)
-            )?;
-        }
-        Instruction::AssertWorktopContainsByIds {
-            ids,
+        } => (
+            "ASSERT_WORKTOP_CONTAINS",
+            to_manifest_value(&(resource_address, amount))?,
+        ),
+        InstructionV1::AssertWorktopContainsNonFungibles {
             resource_address,
-        } => {
-            write!(
-                f,
-                "ASSERT_WORKTOP_CONTAINS_BY_IDS\n    Array<NonFungibleLocalId>({})\n    Address(\"{}\");",
-                ids.iter()
-                    .map(|k| ManifestCustomValue::NonFungibleLocalId(from_non_fungible_local_id(k.clone()))
-                        .to_string(context.for_value_display()))
-                    .collect::<Vec<String>>()
-                    .join(", "),
-                resource_address.display(context.bech32_encoder)
-            )?;
+            ids,
+        } => (
+            "ASSERT_WORKTOP_CONTAINS_NON_FUNGIBLES",
+            to_manifest_value(&(resource_address, ids))?,
+        ),
+        InstructionV1::PopFromAuthZone => {
+            let proof = context.new_proof();
+            ("POP_FROM_AUTH_ZONE", to_manifest_value(&(proof,))?)
         }
-        Instruction::PopFromAuthZone => {
-            let proof_id = context
-                .id_allocator
-                .new_proof_id()
-                .map_err(DecompileError::IdAllocationError)?;
-            let name = format!("proof{}", context.proof_names.len() + 1);
-            context.proof_names.insert(proof_id, name.clone());
-            write!(f, "POP_FROM_AUTH_ZONE\n    Proof(\"{}\");", name)?;
+        InstructionV1::PushToAuthZone { proof_id } => {
+            ("PUSH_TO_AUTH_ZONE", to_manifest_value(&(proof_id,))?)
         }
-        Instruction::PushToAuthZone { proof_id } => {
-            write!(
-                f,
-                "PUSH_TO_AUTH_ZONE\n    Proof({});",
-                context
-                    .proof_names
-                    .get(proof_id)
-                    .map(|name| format!("\"{}\"", name))
-                    .unwrap_or(format!("{}u32", proof_id.0))
-            )?;
+        InstructionV1::ClearAuthZone => ("CLEAR_AUTH_ZONE", to_manifest_value_and_unwrap!(&())),
+        InstructionV1::CreateProofFromAuthZone { resource_address } => {
+            let proof = context.new_proof();
+            (
+                "CREATE_PROOF_FROM_AUTH_ZONE",
+                to_manifest_value(&(resource_address, proof))?,
+            )
         }
-        Instruction::ClearAuthZone => {
-            f.write_str("CLEAR_AUTH_ZONE;")?;
-        }
-        Instruction::CreateProofFromAuthZone { resource_address } => {
-            let proof_id = context
-                .id_allocator
-                .new_proof_id()
-                .map_err(DecompileError::IdAllocationError)?;
-            let name = format!("proof{}", context.proof_names.len() + 1);
-            context.proof_names.insert(proof_id, name.clone());
-            write!(
-                f,
-                "CREATE_PROOF_FROM_AUTH_ZONE\n    Address(\"{}\")\n    Proof(\"{}\");",
-                resource_address.display(context.bech32_encoder),
-                name
-            )?;
-        }
-        Instruction::CreateProofFromAuthZoneByAmount {
+        InstructionV1::CreateProofFromAuthZoneOfAmount {
+            resource_address,
             amount,
-            resource_address,
         } => {
-            let proof_id = context
-                .id_allocator
-                .new_proof_id()
-                .map_err(DecompileError::IdAllocationError)?;
-            let name = format!("proof{}", context.proof_names.len() + 1);
-            context.proof_names.insert(proof_id, name.clone());
-            write!(
-                f,
-                "CREATE_PROOF_FROM_AUTH_ZONE_BY_AMOUNT\n    Decimal(\"{}\")\n    Address(\"{}\")\n    Proof(\"{}\");",
-                amount,
-                resource_address.display(context.bech32_encoder),
-                name
-            )?;
+            let proof = context.new_proof();
+
+            (
+                "CREATE_PROOF_FROM_AUTH_ZONE_OF_AMOUNT",
+                to_manifest_value(&(resource_address, amount, proof))?,
+            )
         }
-        Instruction::CreateProofFromAuthZoneByIds {
+        InstructionV1::CreateProofFromAuthZoneOfNonFungibles {
+            resource_address,
             ids,
-            resource_address,
         } => {
-            let proof_id = context
-                .id_allocator
-                .new_proof_id()
-                .map_err(DecompileError::IdAllocationError)?;
-            let name = format!("proof{}", context.proof_names.len() + 1);
-            context.proof_names.insert(proof_id, name.clone());
-            write!(
-                f,
-                "CREATE_PROOF_FROM_AUTH_ZONE_BY_IDS\n    Array<NonFungibleLocalId>({})\n    Address(\"{}\")\n    Proof(\"{}\");",ids.iter()
-                .map(|k| ManifestCustomValue::NonFungibleLocalId(from_non_fungible_local_id(k.clone())).to_string(context.for_value_display()))
-                .collect::<Vec<String>>()
-                .join(", "),
-                resource_address.display(context.bech32_encoder),
-                name
-            )?;
+            let proof = context.new_proof();
+            (
+                "CREATE_PROOF_FROM_AUTH_ZONE_OF_NON_FUNGIBLES",
+                to_manifest_value(&(resource_address, ids, proof))?,
+            )
         }
-        Instruction::CreateProofFromBucket { bucket_id } => {
-            let proof_id = context
-                .id_allocator
-                .new_proof_id()
-                .map_err(DecompileError::IdAllocationError)?;
-            let name = format!("proof{}", context.proof_names.len() + 1);
-            context.proof_names.insert(proof_id, name.clone());
-            write!(
-                f,
-                "CREATE_PROOF_FROM_BUCKET\n    Bucket({})\n    Proof(\"{}\");",
-                context
-                    .bucket_names
-                    .get(bucket_id)
-                    .map(|name| format!("\"{}\"", name))
-                    .unwrap_or(format!("{}u32", bucket_id.0)),
-                name
-            )?;
+        InstructionV1::CreateProofFromAuthZoneOfAll { resource_address } => {
+            let proof = context.new_proof();
+            (
+                "CREATE_PROOF_FROM_AUTH_ZONE_OF_ALL",
+                to_manifest_value(&(resource_address, proof))?,
+            )
         }
-        Instruction::CloneProof { proof_id } => {
-            let proof_id2 = context
-                .id_allocator
-                .new_proof_id()
-                .map_err(DecompileError::IdAllocationError)?;
-            let name = format!("proof{}", context.proof_names.len() + 1);
-            context.proof_names.insert(proof_id2, name.clone());
-            write!(
-                f,
-                "CLONE_PROOF\n    Proof({})\n    Proof(\"{}\");",
-                context
-                    .proof_names
-                    .get(proof_id)
-                    .map(|name| format!("\"{}\"", name))
-                    .unwrap_or(format!("{}u32", proof_id.0)),
-                name
-            )?;
+
+        InstructionV1::ClearSignatureProofs => ("CLEAR_SIGNATURE_PROOFS", to_manifest_value(&())?),
+
+        InstructionV1::CreateProofFromBucket { bucket_id } => {
+            let proof = context.new_proof();
+            (
+                "CREATE_PROOF_FROM_BUCKET",
+                to_manifest_value(&(bucket_id, proof))?,
+            )
         }
-        Instruction::DropProof { proof_id } => {
-            write!(
-                f,
-                "DROP_PROOF\n    Proof({});",
-                context
-                    .proof_names
-                    .get(proof_id)
-                    .map(|name| format!("\"{}\"", name))
-                    .unwrap_or(format!("{}u32", proof_id.0)),
-            )?;
+
+        InstructionV1::CreateProofFromBucketOfAmount { bucket_id, amount } => {
+            let proof = context.new_proof();
+            (
+                "CREATE_PROOF_FROM_BUCKET_OF_AMOUNT",
+                to_manifest_value(&(bucket_id, amount, proof))?,
+            )
         }
-        Instruction::DropAllProofs => {
-            f.write_str("DROP_ALL_PROOFS;")?;
+        InstructionV1::CreateProofFromBucketOfNonFungibles { bucket_id, ids } => {
+            let proof = context.new_proof();
+            (
+                "CREATE_PROOF_FROM_BUCKET_OF_NON_FUNGIBLES",
+                to_manifest_value(&(bucket_id, ids, proof))?,
+            )
         }
-        Instruction::ClearSignatureProofs => {
-            f.write_str("CLEAR_SIGNATURE_PROOFS;")?;
+        InstructionV1::CreateProofFromBucketOfAll { bucket_id } => {
+            let proof = context.new_proof();
+            (
+                "CREATE_PROOF_FROM_BUCKET_OF_ALL",
+                to_manifest_value(&(bucket_id, proof))?,
+            )
         }
-        Instruction::CallFunction {
+        InstructionV1::BurnResource { bucket_id } => {
+            ("BURN_RESOURCE", to_manifest_value(&(bucket_id,))?)
+        }
+        InstructionV1::CloneProof { proof_id } => {
+            let proof_id2 = context.new_proof();
+            ("CLONE_PROOF", to_manifest_value(&(proof_id, proof_id2))?)
+        }
+        InstructionV1::DropProof { proof_id } => ("DROP_PROOF", to_manifest_value(&(proof_id,))?),
+        InstructionV1::CallFunction {
             package_address,
             blueprint_name,
             function_name,
             args,
         } => {
-            match (
+            let mut fields = Vec::new();
+            let name = match (
                 package_address,
                 blueprint_name.as_str(),
                 function_name.as_str(),
             ) {
-                (&ACCOUNT_PACKAGE, ACCOUNT_BLUEPRINT, ACCOUNT_CREATE_GLOBAL_IDENT) => {
-                    write!(f, "CREATE_ACCOUNT")?;
+                (package_address, PACKAGE_BLUEPRINT, PACKAGE_PUBLISH_WASM_IDENT)
+                    if package_address.is_static_global_package_of(&PACKAGE_PACKAGE) =>
+                {
+                    "PUBLISH_PACKAGE"
                 }
-                (&IDENTITY_PACKAGE, IDENTITY_BLUEPRINT, IDENTITY_CREATE_IDENT) => {
-                    write!(f, "CREATE_IDENTITY")?;
+                (package_address, PACKAGE_BLUEPRINT, PACKAGE_PUBLISH_WASM_ADVANCED_IDENT)
+                    if package_address.is_static_global_package_of(&PACKAGE_PACKAGE) =>
+                {
+                    "PUBLISH_PACKAGE_ADVANCED"
+                }
+                (package_address, ACCOUNT_BLUEPRINT, ACCOUNT_CREATE_ADVANCED_IDENT)
+                    if package_address.is_static_global_package_of(&ACCOUNT_PACKAGE) =>
+                {
+                    "CREATE_ACCOUNT_ADVANCED"
+                }
+                (package_address, ACCOUNT_BLUEPRINT, ACCOUNT_CREATE_IDENT)
+                    if package_address.is_static_global_package_of(&ACCOUNT_PACKAGE) =>
+                {
+                    "CREATE_ACCOUNT"
+                }
+                (package_address, IDENTITY_BLUEPRINT, IDENTITY_CREATE_ADVANCED_IDENT)
+                    if package_address.is_static_global_package_of(&IDENTITY_PACKAGE) =>
+                {
+                    "CREATE_IDENTITY_ADVANCED"
+                }
+                (package_address, IDENTITY_BLUEPRINT, IDENTITY_CREATE_IDENT)
+                    if package_address.is_static_global_package_of(&IDENTITY_PACKAGE) =>
+                {
+                    "CREATE_IDENTITY"
                 }
                 (
-                    &ACCESS_CONTROLLER_PACKAGE,
+                    package_address,
                     ACCESS_CONTROLLER_BLUEPRINT,
                     ACCESS_CONTROLLER_CREATE_GLOBAL_IDENT,
-                ) => {
-                    write!(f, "CREATE_ACCESS_CONTROLLER")?;
+                ) if package_address.is_static_global_package_of(&ACCESS_CONTROLLER_PACKAGE) => {
+                    "CREATE_ACCESS_CONTROLLER"
                 }
                 (
-                    &RESOURCE_MANAGER_PACKAGE,
+                    package_address,
                     FUNGIBLE_RESOURCE_MANAGER_BLUEPRINT,
                     FUNGIBLE_RESOURCE_MANAGER_CREATE_IDENT,
-                ) => {
-                    write!(f, "CREATE_FUNGIBLE_RESOURCE")?;
+                ) if package_address.is_static_global_package_of(&RESOURCE_PACKAGE) => {
+                    "CREATE_FUNGIBLE_RESOURCE"
                 }
                 (
-                    &RESOURCE_MANAGER_PACKAGE,
+                    package_address,
                     FUNGIBLE_RESOURCE_MANAGER_BLUEPRINT,
                     FUNGIBLE_RESOURCE_MANAGER_CREATE_WITH_INITIAL_SUPPLY_IDENT,
-                ) => {
-                    write!(f, "CREATE_FUNGIBLE_RESOURCE_WITH_INITIAL_SUPPLY")?;
+                ) if package_address.is_static_global_package_of(&RESOURCE_PACKAGE) => {
+                    "CREATE_FUNGIBLE_RESOURCE_WITH_INITIAL_SUPPLY"
                 }
                 (
-                    &RESOURCE_MANAGER_PACKAGE,
+                    package_address,
                     NON_FUNGIBLE_RESOURCE_MANAGER_BLUEPRINT,
                     NON_FUNGIBLE_RESOURCE_MANAGER_CREATE_IDENT,
-                ) => {
-                    write!(f, "CREATE_NON_FUNGIBLE_RESOURCE")?;
+                ) if package_address.is_static_global_package_of(&RESOURCE_PACKAGE) => {
+                    "CREATE_NON_FUNGIBLE_RESOURCE"
                 }
                 (
-                    &RESOURCE_MANAGER_PACKAGE,
+                    package_address,
                     NON_FUNGIBLE_RESOURCE_MANAGER_BLUEPRINT,
                     NON_FUNGIBLE_RESOURCE_MANAGER_CREATE_WITH_INITIAL_SUPPLY_IDENT,
-                ) => {
-                    write!(f, "CREATE_NON_FUNGIBLE_RESOURCE_WITH_INITIAL_SUPPLY")?;
+                ) if package_address.is_static_global_package_of(&RESOURCE_PACKAGE) => {
+                    "CREATE_NON_FUNGIBLE_RESOURCE_WITH_INITIAL_SUPPLY"
                 }
                 _ => {
-                    write!(
-                        f,
-                        "CALL_FUNCTION\n    Address(\"{}\")\n    \"{}\"\n    \"{}\"",
-                        package_address.display(context.bech32_encoder),
-                        blueprint_name,
-                        function_name,
-                    )?;
+                    fields.push(package_address.to_instruction_argument());
+                    fields.push(to_manifest_value(blueprint_name)?);
+                    fields.push(to_manifest_value(function_name)?);
+                    "CALL_FUNCTION"
                 }
+            };
+
+            if let Value::Tuple { fields: arg_fields } = args {
+                fields.extend(arg_fields.clone());
+            } else {
+                return Err(DecompileError::InvalidArguments);
             }
 
-            format_encoded_args(f, context, args)?;
-            f.write_str(";")?;
+            let parameters = Value::Tuple { fields };
+            (name, parameters)
         }
-        Instruction::CallMethod {
-            component_address,
+        InstructionV1::CallMethod {
+            address,
             method_name,
             args,
         } => {
-            match (component_address, method_name.as_str()) {
-                (&EPOCH_MANAGER, EPOCH_MANAGER_CREATE_VALIDATOR_IDENT) => {
-                    write!(f, "CREATE_VALIDATOR")?;
+            let mut fields = Vec::new();
+            let name = match (address, method_name.as_str()) {
+                // Nb - For Main method call, we also check the address type to avoid name clashing.
+
+                /* Package */
+                (address, PACKAGE_CLAIM_ROYALTIES_IDENT) if address.is_static_global_package() => {
+                    fields.push(address.to_instruction_argument());
+                    "CLAIM_PACKAGE_ROYALTIES"
                 }
+
+                /* Resource manager */
+                (address, FUNGIBLE_RESOURCE_MANAGER_MINT_IDENT)
+                    if address.is_static_global_fungible_resource_manager() =>
+                {
+                    fields.push(address.to_instruction_argument());
+                    "MINT_FUNGIBLE"
+                }
+                (address, NON_FUNGIBLE_RESOURCE_MANAGER_MINT_IDENT)
+                    if address.is_static_global_non_fungible_resource_manager() =>
+                {
+                    fields.push(address.to_instruction_argument());
+                    "MINT_NON_FUNGIBLE"
+                }
+                (address, NON_FUNGIBLE_RESOURCE_MANAGER_MINT_RUID_IDENT)
+                    if address.is_static_global_non_fungible_resource_manager() =>
+                {
+                    fields.push(address.to_instruction_argument());
+                    "MINT_RUID_NON_FUNGIBLE"
+                }
+
+                /* Validator */
+                (address, CONSENSUS_MANAGER_CREATE_VALIDATOR_IDENT)
+                    if address == &CONSENSUS_MANAGER.into() =>
+                {
+                    "CREATE_VALIDATOR"
+                }
+
+                /* Default */
                 _ => {
-                    f.write_str(&format!(
-                        "CALL_METHOD\n    Address(\"{}\")\n    \"{}\"",
-                        component_address.display(context.bech32_encoder),
-                        method_name
-                    ))?;
+                    fields.push(address.to_instruction_argument());
+                    fields.push(to_manifest_value(method_name)?);
+                    "CALL_METHOD"
                 }
+            };
+
+            if let Value::Tuple { fields: arg_fields } = args {
+                fields.extend(arg_fields.clone());
+            } else {
+                return Err(DecompileError::InvalidArguments);
             }
 
-            format_encoded_args(f, context, args)?;
-            f.write_str(";")?;
+            let parameters = Value::Tuple { fields };
+            (name, parameters)
         }
-        Instruction::PublishPackage {
-            code,
-            schema,
-            royalty_config,
-            metadata,
-            access_rules,
+        InstructionV1::CallRoyaltyMethod {
+            address,
+            method_name,
+            args,
         } => {
-            f.write_str("PUBLISH_PACKAGE")?;
-            format_typed_value(f, context, code)?;
-            format_typed_value(f, context, schema)?;
-            format_typed_value(f, context, royalty_config)?;
-            format_typed_value(f, context, metadata)?;
-            format_typed_value(f, context, access_rules)?;
-            f.write_str(";")?;
+            let mut fields = Vec::new();
+            let name = match (address, method_name.as_str()) {
+                /* Component royalty */
+                (address, COMPONENT_ROYALTY_SET_ROYALTY_IDENT) => {
+                    fields.push(address.to_instruction_argument());
+                    "SET_COMPONENT_ROYALTY"
+                }
+                (address, COMPONENT_ROYALTY_LOCK_ROYALTY_IDENT) => {
+                    fields.push(address.to_instruction_argument());
+                    "LOCK_COMPONENT_ROYALTY"
+                }
+                (address, COMPONENT_ROYALTY_CLAIM_ROYALTIES_IDENT) => {
+                    fields.push(address.to_instruction_argument());
+                    "CLAIM_COMPONENT_ROYALTIES"
+                }
+
+                /* Default */
+                _ => {
+                    fields.push(address.to_instruction_argument());
+                    fields.push(to_manifest_value(method_name)?);
+                    "CALL_ROYALTY_METHOD"
+                }
+            };
+
+            if let Value::Tuple { fields: arg_fields } = args {
+                fields.extend(arg_fields.clone());
+            } else {
+                return Err(DecompileError::InvalidArguments);
+            }
+
+            let parameters = Value::Tuple { fields };
+            (name, parameters)
         }
-        Instruction::BurnResource { bucket_id } => {
-            write!(
-                f,
-                "BURN_RESOURCE\n    Bucket({});",
-                context
-                    .bucket_names
-                    .get(bucket_id)
-                    .map(|name| format!("\"{}\"", name))
-                    .unwrap_or(format!("{}u32", bucket_id.0)),
-            )?;
-        }
-        Instruction::RecallResource { vault_id, amount } => {
-            f.write_str("RECALL_RESOURCE")?;
-            format_typed_value(f, context, vault_id)?;
-            format_typed_value(f, context, amount)?;
-            f.write_str(";")?;
-        }
-        Instruction::SetMetadata {
-            entity_address,
-            key,
-            value,
+        InstructionV1::CallMetadataMethod {
+            address,
+            method_name,
+            args,
         } => {
-            f.write_str("SET_METADATA")?;
-            format_typed_value(f, context, entity_address)?;
-            format_typed_value(f, context, key)?;
-            format_typed_value(f, context, value)?;
-            f.write_str(";")?;
+            let mut fields = Vec::new();
+            let name = match (address, method_name.as_str()) {
+                /* Metadata */
+                (address, METADATA_SET_IDENT) => {
+                    fields.push(address.to_instruction_argument());
+                    "SET_METADATA"
+                }
+                (address, METADATA_REMOVE_IDENT) => {
+                    fields.push(address.to_instruction_argument());
+                    "REMOVE_METADATA"
+                }
+                (address, METADATA_LOCK_IDENT) => {
+                    fields.push(address.to_instruction_argument());
+                    "LOCK_METADATA"
+                }
+
+                /* Default */
+                _ => {
+                    fields.push(address.to_instruction_argument());
+                    fields.push(to_manifest_value(method_name)?);
+                    "CALL_METADATA_METHOD"
+                }
+            };
+
+            if let Value::Tuple { fields: arg_fields } = args {
+                fields.extend(arg_fields.clone());
+            } else {
+                return Err(DecompileError::InvalidArguments);
+            }
+
+            let parameters = Value::Tuple { fields };
+            (name, parameters)
         }
-        Instruction::RemoveMetadata {
-            entity_address,
-            key,
+        InstructionV1::CallAccessRulesMethod {
+            address,
+            method_name,
+            args,
         } => {
-            f.write_str("REMOVE_METADATA")?;
-            format_typed_value(f, context, entity_address)?;
-            format_typed_value(f, context, key)?;
-            f.write_str(";")?;
+            let mut fields = Vec::new();
+            let name = match (address, method_name.as_str()) {
+                /* Access rules */
+                (address, ACCESS_RULES_SET_OWNER_ROLE_IDENT) => {
+                    fields.push(address.to_instruction_argument());
+                    "SET_OWNER_ROLE"
+                }
+                (address, ACCESS_RULES_LOCK_OWNER_ROLE_IDENT) => {
+                    fields.push(address.to_instruction_argument());
+                    "LOCK_OWNER_ROLE"
+                }
+                (address, ACCESS_RULES_SET_AND_LOCK_OWNER_ROLE_IDENT) => {
+                    fields.push(address.to_instruction_argument());
+                    "SET_AND_LOCK_OWNER_ROLE"
+                }
+                (address, ACCESS_RULES_SET_ROLE_IDENT) => {
+                    fields.push(address.to_instruction_argument());
+                    "SET_ROLE"
+                }
+                (address, ACCESS_RULES_LOCK_ROLE_IDENT) => {
+                    fields.push(address.to_instruction_argument());
+                    "LOCK_ROLE"
+                }
+                (address, ACCESS_RULES_SET_AND_LOCK_ROLE_IDENT) => {
+                    fields.push(address.to_instruction_argument());
+                    "SET_AND_LOCK_ROLE"
+                }
+
+                /* Default */
+                _ => {
+                    fields.push(address.to_instruction_argument());
+                    fields.push(to_manifest_value(method_name)?);
+                    "CALL_ACCESS_RULES_METHOD"
+                }
+            };
+
+            if let Value::Tuple { fields: arg_fields } = args {
+                fields.extend(arg_fields.clone());
+            } else {
+                return Err(DecompileError::InvalidArguments);
+            }
+
+            let parameters = Value::Tuple { fields };
+            (name, parameters)
         }
-        Instruction::SetPackageRoyaltyConfig {
+        InstructionV1::CallDirectVaultMethod {
+            address: vault_id,
+            method_name,
+            args,
+        } => {
+            let mut fields = Vec::new();
+            let name = match method_name.as_str() {
+                VAULT_RECALL_IDENT => {
+                    fields.push(to_manifest_value(vault_id)?);
+                    "RECALL_FROM_VAULT"
+                }
+                VAULT_FREEZE_IDENT => {
+                    fields.push(to_manifest_value(vault_id)?);
+                    "FREEZE_VAULT"
+                }
+                VAULT_UNFREEZE_IDENT => {
+                    fields.push(to_manifest_value(vault_id)?);
+                    "UNFREEZE_VAULT"
+                }
+                /* Default */
+                _ => {
+                    fields.push(to_manifest_value(vault_id)?);
+                    fields.push(to_manifest_value(method_name)?);
+                    "CALL_DIRECT_VAULT_METHOD"
+                }
+            };
+
+            if let Value::Tuple { fields: arg_fields } = args {
+                fields.extend(arg_fields.clone());
+            } else {
+                return Err(DecompileError::InvalidArguments);
+            }
+
+            let parameters = Value::Tuple { fields };
+            (name, parameters)
+        }
+
+        InstructionV1::DropAllProofs => ("DROP_ALL_PROOFS", to_manifest_value(&())?),
+        InstructionV1::AllocateGlobalAddress {
             package_address,
-            royalty_config,
+            blueprint_name,
         } => {
-            f.write_str("SET_PACKAGE_ROYALTY_CONFIG")?;
-            format_typed_value(f, context, package_address)?;
-            format_typed_value(f, context, royalty_config)?;
-            f.write_str(";")?;
+            let address_reservation = context.new_address_reservation();
+            let named_address = context.new_address();
+            (
+                "ALLOCATE_GLOBAL_ADDRESS",
+                to_manifest_value(&(
+                    package_address,
+                    blueprint_name,
+                    address_reservation,
+                    named_address,
+                ))?,
+            )
         }
-        Instruction::SetComponentRoyaltyConfig {
-            component_address,
-            royalty_config,
-        } => {
-            f.write_str("SET_COMPONENT_ROYALTY_CONFIG")?;
-            format_typed_value(f, context, component_address)?;
-            format_typed_value(f, context, royalty_config)?;
-            f.write_str(";")?;
-        }
-        Instruction::ClaimPackageRoyalty { package_address } => {
-            f.write_str("CLAIM_PACKAGE_ROYALTY")?;
-            format_typed_value(f, context, package_address)?;
-            f.write_str(";")?;
-        }
-        Instruction::ClaimComponentRoyalty { component_address } => {
-            f.write_str("CLAIM_COMPONENT_ROYALTY")?;
-            format_typed_value(f, context, component_address)?;
-            f.write_str(";")?;
-        }
-        Instruction::SetMethodAccessRule {
-            entity_address,
-            key,
-            rule,
-        } => {
-            f.write_str("SET_METHOD_ACCESS_RULE")?;
-            format_typed_value(f, context, entity_address)?;
-            format_typed_value(f, context, key)?;
-            format_typed_value(f, context, rule)?;
-            f.write_str(";")?;
-        }
-        Instruction::MintFungible {
-            resource_address,
-            amount,
-        } => {
-            f.write_str("MINT_FUNGIBLE")?;
-            format_typed_value(f, context, resource_address)?;
-            format_typed_value(f, context, amount)?;
-            f.write_str(";")?;
-        }
-        Instruction::MintNonFungible {
-            resource_address,
-            args,
-        } => {
-            f.write_str("MINT_NON_FUNGIBLE")?;
-            format_typed_value(f, context, resource_address)?;
-            f.write_str("\n    ")?;
-            format_manifest_value(f, args, &context.for_value_display())?;
-            f.write_str(";")?;
-        }
-        Instruction::MintUuidNonFungible {
-            resource_address,
-            args,
-        } => {
-            f.write_str("MINT_UUID_NON_FUNGIBLE")?;
-            format_typed_value(f, context, resource_address)?;
-            f.write_str("\n    ")?;
-            format_manifest_value(f, args, &context.for_value_display())?;
-            f.write_str(";")?;
-        }
-        Instruction::AssertAccessRule { access_rule } => {
-            f.write_str("ASSERT_ACCESS_RULE")?;
-            format_typed_value(f, context, access_rule)?;
-            f.write_str(";")?;
-        }
-    }
-    Ok(())
-}
+    };
 
-pub fn format_typed_value<F: fmt::Write, T: ManifestEncode>(
-    f: &mut F,
-    context: &mut DecompilationContext,
-    value: &T,
-) -> Result<(), DecompileError> {
-    f.write_str("\n    ")?;
-    let value: ManifestValue = to_manifest_value(value);
-
-    format_manifest_value(f, &value, &context.for_value_display())?;
-    Ok(())
-}
-
-pub fn format_encoded_args<F: fmt::Write>(
-    f: &mut F,
-    context: &mut DecompilationContext,
-    value: &ManifestValue,
-) -> Result<(), DecompileError> {
-    if let Value::Tuple { fields } = value {
+    write!(f, "{}", display_name)?;
+    if let Value::Tuple { fields } = display_parameters {
+        let field_count = fields.len();
         for field in fields {
-            f.write_str("\n    ")?;
-            format_manifest_value(f, &field, &context.for_value_display())?;
+            write!(f, "\n")?;
+            format_manifest_value(f, &field, &context.for_value_display(), true, 0)?;
+        }
+        if field_count > 0 {
+            write!(f, "\n;\n")?;
+        } else {
+            write!(f, ";\n")?;
         }
     } else {
-        return Err(DecompileError::InvalidArguments);
+        panic!(
+            "Parameters are not a tuple: name = {:?}, parameters = {:?}",
+            display_name, display_parameters
+        );
     }
 
     Ok(())

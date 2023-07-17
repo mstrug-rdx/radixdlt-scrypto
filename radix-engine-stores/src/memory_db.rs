@@ -1,72 +1,71 @@
-use radix_engine::ledger::{
-    OutputValue, QueryableSubstateStore, ReadableSubstateStore, WriteableSubstateStore,
-};
-use radix_engine::system::node_substates::PersistedSubstate;
-use radix_engine::types::*;
-use radix_engine_interface::api::types::RENodeId;
+use radix_engine_store_interface::interface::*;
+use sbor::rust::prelude::*;
 
-/// A substate store that stores all typed substates in host memory.
-#[derive(Debug, PartialEq, Eq)]
-pub struct SerializedInMemorySubstateStore {
-    substates: HashMap<Vec<u8>, Vec<u8>>,
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct InMemorySubstateDatabase {
+    partitions: IndexMap<DbPartitionKey, BTreeMap<DbSortKey, DbSubstateValue>>,
 }
 
-impl SerializedInMemorySubstateStore {
-    pub fn new() -> Self {
+impl InMemorySubstateDatabase {
+    pub fn standard() -> Self {
         Self {
-            substates: HashMap::new(),
+            partitions: index_map_new(),
         }
     }
 }
 
-impl Default for SerializedInMemorySubstateStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ReadableSubstateStore for SerializedInMemorySubstateStore {
-    fn get_substate(&self, substate_id: &SubstateId) -> Option<OutputValue> {
-        self.substates
-            .get(&scrypto_encode(substate_id).expect("Could not encode substate id"))
-            .map(|b| scrypto_decode(&b).unwrap())
-    }
-}
-
-impl WriteableSubstateStore for SerializedInMemorySubstateStore {
-    fn put_substate(&mut self, substate_id: SubstateId, substate: OutputValue) {
-        self.substates.insert(
-            scrypto_encode(&substate_id).expect("Could not encode substate id"),
-            scrypto_encode(&substate).expect("Could not encode substate"),
-        );
-    }
-}
-
-impl QueryableSubstateStore for SerializedInMemorySubstateStore {
-    fn get_kv_store_entries(
+impl SubstateDatabase for InMemorySubstateDatabase {
+    fn get_substate(
         &self,
-        kv_store_id: &KeyValueStoreId,
-    ) -> HashMap<Vec<u8>, PersistedSubstate> {
-        self.substates
-            .iter()
-            .filter_map(|(key, value)| {
-                let substate_id: SubstateId = scrypto_decode(key).unwrap();
-                if let SubstateId(
-                    RENodeId::KeyValueStore(id),
-                    NodeModuleId::SELF,
-                    SubstateOffset::KeyValueStore(KeyValueStoreOffset::Entry(entry_id)),
-                ) = substate_id
-                {
-                    let output_value: OutputValue = scrypto_decode(value).unwrap();
-                    if id == *kv_store_id {
-                        Some((entry_id.clone(), output_value.substate))
-                    } else {
-                        None
+        partition_key: &DbPartitionKey,
+        sort_key: &DbSortKey,
+    ) -> Option<DbSubstateValue> {
+        self.partitions
+            .get(partition_key)
+            .and_then(|partition| partition.get(sort_key))
+            .cloned()
+    }
+
+    fn list_entries(
+        &self,
+        partition_key: &DbPartitionKey,
+    ) -> Box<dyn Iterator<Item = PartitionEntry> + '_> {
+        let iter = self
+            .partitions
+            .get(partition_key)
+            .into_iter()
+            .flat_map(|partition| partition.iter())
+            .map(|(key, substate)| (key.clone(), substate.clone()));
+
+        Box::new(iter)
+    }
+}
+
+impl CommittableSubstateDatabase for InMemorySubstateDatabase {
+    fn commit(&mut self, database_updates: &DatabaseUpdates) {
+        for (partition_key, partition_updates) in database_updates {
+            let partition = self
+                .partitions
+                .entry(partition_key.clone())
+                .or_insert_with(|| BTreeMap::new());
+            for (sort_key, update) in partition_updates {
+                match update {
+                    DatabaseUpdate::Set(substate_value) => {
+                        partition.insert(sort_key.clone(), substate_value.clone())
                     }
-                } else {
-                    None
-                }
-            })
-            .collect()
+                    DatabaseUpdate::Delete => partition.remove(sort_key),
+                };
+            }
+            if partition.is_empty() {
+                self.partitions.remove(partition_key);
+            }
+        }
+    }
+}
+
+impl ListableSubstateDatabase for InMemorySubstateDatabase {
+    fn list_partition_keys(&self) -> Box<dyn Iterator<Item = DbPartitionKey> + '_> {
+        let partition_iter = self.partitions.iter().map(|(key, _)| key.clone());
+        Box::new(partition_iter)
     }
 }

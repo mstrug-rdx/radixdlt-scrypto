@@ -2,10 +2,23 @@ use scrypto::prelude::*;
 
 #[blueprint]
 mod royalty_test {
+    enable_package_royalties! {
+        paid_method => Xrd(2.into());
+        paid_method_usd => Free;
+        paid_method_panic => Xrd(2.into());
+        free_method => Free;
+        create_component_with_royalty_enabled => Free;
+        create_component_with_royalty => Free;
+    }
+
     struct RoyaltyTest {}
 
     impl RoyaltyTest {
         pub fn paid_method(&self) -> u32 {
+            0
+        }
+
+        pub fn paid_method_usd(&self) -> u32 {
             0
         }
 
@@ -17,36 +30,42 @@ mod royalty_test {
             1
         }
 
-        pub fn create_component_with_royalty_enabled() -> ComponentAddress {
-            let local_component = Self {}.instantiate();
-
-            let config = RoyaltyConfigBuilder::new()
-                .add_rule("paid_method", 1)
-                .add_rule("paid_method_panic", 1)
-                .default(0);
-
-            local_component.globalize_with_royalty_config(config)
+        pub fn create_component_with_royalty_enabled() -> Global<RoyaltyTest> {
+            Self {}
+                .instantiate()
+                .prepare_to_globalize(OwnerRole::None)
+                .enable_component_royalties(component_royalties! {
+                    roles {
+                        royalty_admin => rule!(allow_all), locked;
+                        royalty_admin_updater => rule!(deny_all), locked;
+                    },
+                    init {
+                        free_method => Free, updatable;
+                        paid_method => Xrd(1.into()), updatable;
+                        paid_method_usd => Usd(1.into()), updatable;
+                        paid_method_panic => Xrd(1.into()), updatable;
+                    }
+                })
+                .globalize()
         }
 
-        pub fn enable_royalty_for_this_package() {
-            let package_address = Runtime::package_address();
-
-            borrow_package!(package_address).set_royalty_config(BTreeMap::from([(
-                "RoyaltyTest".to_owned(),
-                RoyaltyConfigBuilder::new()
-                    .add_rule("paid_method", 2)
-                    .add_rule("paid_method_panic", 2)
-                    .default(0),
-            )]));
-        }
-
-        pub fn claim_package_royalty(address: PackageAddress) -> Bucket {
-            borrow_package!(address).claim_royalty()
-        }
-
-        pub fn claim_component_royalty(address: ComponentAddress) -> Bucket {
-            let royalty = borrow_component!(address).royalty();
-            royalty.claim_royalty()
+        pub fn create_component_with_royalty(amount: Decimal) -> Global<RoyaltyTest> {
+            Self {}
+                .instantiate()
+                .prepare_to_globalize(OwnerRole::None)
+                .enable_component_royalties(component_royalties! {
+                    roles {
+                        royalty_admin => rule!(allow_all), locked;
+                        royalty_admin_updater => rule!(deny_all), locked;
+                    },
+                    init {
+                        free_method => Free, updatable;
+                        paid_method => Xrd(amount), updatable;
+                        paid_method_usd => Usd(1.into()), updatable;
+                        paid_method_panic => Xrd(1.into()), updatable;
+                    }
+                })
+                .globalize()
         }
     }
 }

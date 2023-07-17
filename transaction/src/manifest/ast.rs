@@ -1,20 +1,23 @@
 use radix_engine_interface::data::manifest::{ManifestCustomValueKind, ManifestValueKind};
+#[cfg(feature = "radix_engine_fuzzing")]
+use strum_macros::EnumCount;
 
+#[cfg_attr(feature = "radix_engine_fuzzing", derive(EnumCount))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction {
     TakeFromWorktop {
         resource_address: Value,
+        amount: Value,
         new_bucket: Value,
     },
 
-    TakeFromWorktopByAmount {
-        amount: Value,
+    TakeNonFungiblesFromWorktop {
+        ids: Value,
         resource_address: Value,
         new_bucket: Value,
     },
 
-    TakeFromWorktopByIds {
-        ids: Value,
+    TakeAllFromWorktop {
         resource_address: Value,
         new_bucket: Value,
     },
@@ -25,16 +28,12 @@ pub enum Instruction {
 
     AssertWorktopContains {
         resource_address: Value,
-    },
-
-    AssertWorktopContainsByAmount {
         amount: Value,
-        resource_address: Value,
     },
 
-    AssertWorktopContainsByIds {
-        ids: Value,
+    AssertWorktopContainsNonFungibles {
         resource_address: Value,
+        ids: Value,
     },
 
     PopFromAuthZone {
@@ -52,21 +51,49 @@ pub enum Instruction {
         new_proof: Value,
     },
 
-    CreateProofFromAuthZoneByAmount {
+    CreateProofFromAuthZoneOfAmount {
+        resource_address: Value,
         amount: Value,
+        new_proof: Value,
+    },
+
+    CreateProofFromAuthZoneOfNonFungibles {
+        resource_address: Value,
+        ids: Value,
+        new_proof: Value,
+    },
+
+    CreateProofFromAuthZoneOfAll {
         resource_address: Value,
         new_proof: Value,
     },
 
-    CreateProofFromAuthZoneByIds {
-        ids: Value,
-        resource_address: Value,
-        new_proof: Value,
-    },
+    ClearSignatureProofs,
 
     CreateProofFromBucket {
         bucket: Value,
         new_proof: Value,
+    },
+
+    CreateProofFromBucketOfAmount {
+        bucket: Value,
+        amount: Value,
+        new_proof: Value,
+    },
+
+    CreateProofFromBucketOfNonFungibles {
+        bucket: Value,
+        ids: Value,
+        new_proof: Value,
+    },
+
+    CreateProofFromBucketOfAll {
+        bucket: Value,
+        new_proof: Value,
+    },
+
+    BurnResource {
+        bucket: Value,
     },
 
     CloneProof {
@@ -78,10 +105,6 @@ pub enum Instruction {
         proof: Value,
     },
 
-    DropAllProofs,
-
-    ClearSignatureProofs,
-
     CallFunction {
         package_address: Value,
         blueprint_name: Value,
@@ -90,134 +113,164 @@ pub enum Instruction {
     },
 
     CallMethod {
-        component_address: Value,
+        address: Value,
         method_name: Value,
         args: Vec<Value>,
     },
 
-    PublishPackage {
-        code: Value,
-        schema: Value,
-        royalty_config: Value,
-        metadata: Value,
-        access_rules: Value,
+    CallRoyaltyMethod {
+        address: Value,
+        method_name: Value,
+        args: Vec<Value>,
     },
 
-    BurnResource {
-        bucket: Value,
+    CallMetadataMethod {
+        address: Value,
+        method_name: Value,
+        args: Vec<Value>,
     },
 
-    // TODO: Dedicated bucket for this?
-    RecallResource {
+    CallAccessRulesMethod {
+        address: Value,
+        method_name: Value,
+        args: Vec<Value>,
+    },
+
+    DropAllProofs,
+
+    AllocateGlobalAddress {
+        package_address: Value,
+        blueprint_name: Value,
+        address_reservation: Value,
+        named_address: Value,
+    },
+
+    /* Call direct vault method aliases */
+    RecallFromVault {
         vault_id: Value,
-        amount: Value,
+        args: Vec<Value>,
+    },
+    FreezeVault {
+        vault_id: Value,
+        args: Vec<Value>,
+    },
+    UnfreezeVault {
+        vault_id: Value,
+        args: Vec<Value>,
     },
 
-    SetMetadata {
-        entity_address: Value,
-        key: Value,
-        value: Value,
+    /* Call function aliases */
+    PublishPackage {
+        args: Vec<Value>,
     },
-
-    RemoveMetadata {
-        entity_address: Value,
-        key: Value,
+    PublishPackageAdvanced {
+        args: Vec<Value>,
     },
-
-    SetPackageRoyaltyConfig {
-        package_address: Value,
-        royalty_config: Value,
-    },
-
-    SetComponentRoyaltyConfig {
-        component_address: Value,
-        royalty_config: Value,
-    },
-
-    // TODO: Dedicated bucket for this?
-    ClaimPackageRoyalty {
-        package_address: Value,
-    },
-
-    // TODO: Dedicated bucket for this?
-    ClaimComponentRoyalty {
-        component_address: Value,
-    },
-
-    SetMethodAccessRule {
-        entity_address: Value,
-        key: Value,
-        rule: Value,
-    },
-
-    MintFungible {
-        resource_address: Value,
-        amount: Value,
-    },
-
-    MintNonFungible {
-        resource_address: Value,
-        args: Value,
-    },
-
-    MintUuidNonFungible {
-        resource_address: Value,
-        args: Value,
-    },
-
     CreateFungibleResource {
-        divisibility: Value,
-        metadata: Value,
-        access_rules: Value,
+        args: Vec<Value>,
     },
-
     CreateFungibleResourceWithInitialSupply {
-        divisibility: Value,
-        metadata: Value,
-        access_rules: Value,
-        initial_supply: Value,
+        args: Vec<Value>,
     },
-
     CreateNonFungibleResource {
-        id_type: Value,
-        schema: Value,
-        metadata: Value,
-        access_rules: Value,
+        args: Vec<Value>,
     },
-
     CreateNonFungibleResourceWithInitialSupply {
-        id_type: Value,
-        schema: Value,
-        metadata: Value,
-        access_rules: Value,
-        initial_supply: Value,
-    },
-
-    CreateValidator {
-        key: Value,
-        owner_access_rule: Value,
+        args: Vec<Value>,
     },
     CreateAccessController {
-        controlled_asset: Value,
-        rule_set: Value,
-        timed_recovery_delay_in_minutes: Value,
+        args: Vec<Value>,
     },
     CreateIdentity {
-        access_rule: Value,
+        args: Vec<Value>,
     },
-
-    AssertAccessRule {
-        access_rule: Value,
+    CreateIdentityAdvanced {
+        args: Vec<Value>,
     },
-
     CreateAccount {
-        withdraw_rule: Value,
+        args: Vec<Value>,
+    },
+    CreateAccountAdvanced {
+        args: Vec<Value>,
+    },
+
+    /* call non-main method aliases */
+    SetMetadata {
+        address: Value,
+        args: Vec<Value>,
+    },
+    RemoveMetadata {
+        address: Value,
+        args: Vec<Value>,
+    },
+    LockMetadata {
+        address: Value,
+        args: Vec<Value>,
+    },
+    SetComponentRoyalty {
+        address: Value,
+        args: Vec<Value>,
+    },
+    SetOwnerRole {
+        address: Value,
+        args: Vec<Value>,
+    },
+    LockOwnerRole {
+        address: Value,
+        args: Vec<Value>,
+    },
+    SetAndLockOwnerRole {
+        address: Value,
+        args: Vec<Value>,
+    },
+    SetRole {
+        address: Value,
+        args: Vec<Value>,
+    },
+    LockRole {
+        address: Value,
+        args: Vec<Value>,
+    },
+    SetAndLockRole {
+        address: Value,
+        args: Vec<Value>,
+    },
+    LockComponentRoyalty {
+        address: Value,
+        args: Vec<Value>,
+    },
+    ClaimComponentRoyalties {
+        address: Value,
+        args: Vec<Value>,
+    },
+
+    /* call main method aliases */
+    ClaimPackageRoyalties {
+        address: Value,
+        args: Vec<Value>,
+    },
+    MintFungible {
+        address: Value,
+        args: Vec<Value>,
+    },
+    MintNonFungible {
+        address: Value,
+        args: Vec<Value>,
+    },
+    MintRuidNonFungible {
+        address: Value,
+        args: Vec<Value>,
+    },
+    CreateValidator {
+        args: Vec<Value>,
     },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Type {
-    /* Rust types */
+pub enum ValueKind {
+    // ==============
+    // Simple basic value kinds
+    // ==============
     Bool,
     I8,
     I16,
@@ -231,15 +284,16 @@ pub enum Type {
     U128,
     String,
 
-    /* Struct and enum */
+    // ==============
+    // Composite basic value kinds
+    // ==============
     Enum,
-
-    /* [T; N] and (A, B, C) */
     Array,
     Tuple,
+    Map,
 
     // ==============
-    // Alias
+    // Value kind aliases
     // ==============
     Bytes,
     NonFungibleGlobalId,
@@ -248,58 +302,80 @@ pub enum Type {
     ResourceAddress,
 
     // ==============
-    // Custom Types
+    // Custom value kinds
     // ==============
     Address,
     Bucket,
     Proof,
     Expression,
     Blob,
-
-    // Uninterpreted,
     Decimal,
     PreciseDecimal,
     NonFungibleLocalId,
+    AddressReservation,
+    NamedAddress,
 }
 
-impl Type {
+impl ValueKind {
     pub fn value_kind(&self) -> ManifestValueKind {
         match self {
-            Type::Bool => ManifestValueKind::Bool,
-            Type::I8 => ManifestValueKind::I8,
-            Type::I16 => ManifestValueKind::I16,
-            Type::I32 => ManifestValueKind::I32,
-            Type::I64 => ManifestValueKind::I64,
-            Type::I128 => ManifestValueKind::I128,
-            Type::U8 => ManifestValueKind::U8,
-            Type::U16 => ManifestValueKind::U16,
-            Type::U32 => ManifestValueKind::U32,
-            Type::U64 => ManifestValueKind::U64,
-            Type::U128 => ManifestValueKind::U128,
-            Type::String => ManifestValueKind::String,
-            Type::Enum => ManifestValueKind::Enum,
-            Type::Array => ManifestValueKind::Array,
-            Type::Tuple => ManifestValueKind::Tuple,
+            // ==============
+            // Simple basic value kinds
+            // ==============
+            ValueKind::Bool => ManifestValueKind::Bool,
+            ValueKind::I8 => ManifestValueKind::I8,
+            ValueKind::I16 => ManifestValueKind::I16,
+            ValueKind::I32 => ManifestValueKind::I32,
+            ValueKind::I64 => ManifestValueKind::I64,
+            ValueKind::I128 => ManifestValueKind::I128,
+            ValueKind::U8 => ManifestValueKind::U8,
+            ValueKind::U16 => ManifestValueKind::U16,
+            ValueKind::U32 => ManifestValueKind::U32,
+            ValueKind::U64 => ManifestValueKind::U64,
+            ValueKind::U128 => ManifestValueKind::U128,
+            ValueKind::String => ManifestValueKind::String,
 
-            // Aliases
-            Type::Bytes => ManifestValueKind::Array,
-            Type::NonFungibleGlobalId => ManifestValueKind::Tuple,
-            Type::PackageAddress => ManifestValueKind::Custom(ManifestCustomValueKind::Address),
-            Type::ComponentAddress => ManifestValueKind::Custom(ManifestCustomValueKind::Address),
-            Type::ResourceAddress => ManifestValueKind::Custom(ManifestCustomValueKind::Address),
+            // ==============
+            // Composite basic value kinds
+            // ==============
+            ValueKind::Enum => ManifestValueKind::Enum,
+            ValueKind::Array => ManifestValueKind::Array,
+            ValueKind::Tuple => ManifestValueKind::Tuple,
+            ValueKind::Map => ManifestValueKind::Map,
 
-            // Custom types
-            Type::Address => ManifestValueKind::Custom(ManifestCustomValueKind::Address),
-            Type::Bucket => ManifestValueKind::Custom(ManifestCustomValueKind::Bucket),
-            Type::Proof => ManifestValueKind::Custom(ManifestCustomValueKind::Proof),
-            Type::Expression => ManifestValueKind::Custom(ManifestCustomValueKind::Expression),
-            Type::Blob => ManifestValueKind::Custom(ManifestCustomValueKind::Blob),
-            Type::Decimal => ManifestValueKind::Custom(ManifestCustomValueKind::Decimal),
-            Type::PreciseDecimal => {
+            // ==============
+            // Value kind aliases
+            // ==============
+            ValueKind::Bytes => ManifestValueKind::Array,
+            ValueKind::NonFungibleGlobalId => ManifestValueKind::Tuple,
+            ValueKind::PackageAddress => {
+                ManifestValueKind::Custom(ManifestCustomValueKind::Address)
+            }
+            ValueKind::ComponentAddress => {
+                ManifestValueKind::Custom(ManifestCustomValueKind::Address)
+            }
+            ValueKind::ResourceAddress => {
+                ManifestValueKind::Custom(ManifestCustomValueKind::Address)
+            }
+
+            // ==============
+            // Custom value kinds
+            // ==============
+            ValueKind::Address => ManifestValueKind::Custom(ManifestCustomValueKind::Address),
+            ValueKind::NamedAddress => ManifestValueKind::Custom(ManifestCustomValueKind::Address),
+            ValueKind::Bucket => ManifestValueKind::Custom(ManifestCustomValueKind::Bucket),
+            ValueKind::Proof => ManifestValueKind::Custom(ManifestCustomValueKind::Proof),
+            ValueKind::Expression => ManifestValueKind::Custom(ManifestCustomValueKind::Expression),
+            ValueKind::Blob => ManifestValueKind::Custom(ManifestCustomValueKind::Blob),
+            ValueKind::Decimal => ManifestValueKind::Custom(ManifestCustomValueKind::Decimal),
+            ValueKind::PreciseDecimal => {
                 ManifestValueKind::Custom(ManifestCustomValueKind::PreciseDecimal)
             }
-            Type::NonFungibleLocalId => {
+            ValueKind::NonFungibleLocalId => {
                 ManifestValueKind::Custom(ManifestCustomValueKind::NonFungibleLocalId)
+            }
+            ValueKind::AddressReservation => {
+                ManifestValueKind::Custom(ManifestCustomValueKind::AddressReservation)
             }
         }
     }
@@ -308,7 +384,7 @@ impl Type {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     // ==============
-    // Basic Types
+    // Basic values
     // ==============
     Bool(bool),
     I8(i8),
@@ -323,13 +399,16 @@ pub enum Value {
     U128(u128),
     String(String),
 
+    // ==============
+    // Composite basic values
+    // ==============
     Enum(u8, Vec<Value>),
-    Array(Type, Vec<Value>),
+    Array(ValueKind, Vec<Value>),
     Tuple(Vec<Value>),
-    Map(Type, Type, Vec<Value>),
+    Map(ValueKind, ValueKind, Vec<(Value, Value)>),
 
     // ==============
-    // Aliases
+    // Alias values
     // ==============
     Some(Box<Value>),
     None,
@@ -339,9 +418,10 @@ pub enum Value {
     NonFungibleGlobalId(Box<Value>),
 
     // ==============
-    // Custom Types
+    // Custom values
     // ==============
     Address(Box<Value>),
+    NamedAddress(Box<Value>),
     Bucket(Box<Value>),
     Proof(Box<Value>),
     Expression(Box<Value>),
@@ -349,13 +429,14 @@ pub enum Value {
     Decimal(Box<Value>),
     PreciseDecimal(Box<Value>),
     NonFungibleLocalId(Box<Value>),
+    AddressReservation(Box<Value>),
 }
 
 impl Value {
     pub const fn value_kind(&self) -> ManifestValueKind {
         match self {
             // ==============
-            // Basic Types
+            // Basic values
             // ==============
             Value::Bool(_) => ManifestValueKind::Bool,
             Value::I8(_) => ManifestValueKind::I8,
@@ -375,7 +456,7 @@ impl Value {
             Value::Map(_, _, _) => ManifestValueKind::Map,
 
             // ==============
-            // Aliases
+            // Aliase values
             // ==============
             Value::Some(_) => ManifestValueKind::Enum,
             Value::None => ManifestValueKind::Enum,
@@ -385,9 +466,10 @@ impl Value {
             Value::NonFungibleGlobalId(_) => ManifestValueKind::Tuple,
 
             // ==============
-            // Custom Types
+            // Custom values
             // ==============
             Value::Address(_) => ManifestValueKind::Custom(ManifestCustomValueKind::Address),
+            Value::NamedAddress(_) => ManifestValueKind::Custom(ManifestCustomValueKind::Address),
             Value::Bucket(_) => ManifestValueKind::Custom(ManifestCustomValueKind::Bucket),
             Value::Proof(_) => ManifestValueKind::Custom(ManifestCustomValueKind::Proof),
             Value::Expression(_) => ManifestValueKind::Custom(ManifestCustomValueKind::Expression),
@@ -398,6 +480,9 @@ impl Value {
             }
             Value::NonFungibleLocalId(_) => {
                 ManifestValueKind::Custom(ManifestCustomValueKind::NonFungibleLocalId)
+            }
+            Value::AddressReservation(_) => {
+                ManifestValueKind::Custom(ManifestCustomValueKind::AddressReservation)
             }
         }
     }

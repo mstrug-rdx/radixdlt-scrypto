@@ -11,10 +11,13 @@ mod auth_list_component {
         pub fn create_component(
             count: u8,
             auth: Vec<NonFungibleGlobalId>,
-            access_rules: AccessRulesConfig,
-        ) -> ComponentAddress {
-            let component = Self { count, auth }.instantiate();
-            component.globalize_with_access_rules(access_rules)
+            roles: RolesInit,
+        ) -> Global<AuthListComponent> {
+            Self { count, auth }
+                .instantiate()
+                .prepare_to_globalize(OwnerRole::None)
+                .roles(roles)
+                .globalize()
         }
 
         pub fn update_count(&mut self, count: u8) {

@@ -1,22 +1,20 @@
-use crate::blueprints::epoch_manager::{EpochChangeEvent, Validator};
+use super::{BalanceChange, StateUpdateSummary};
+use crate::blueprints::consensus_manager::EpochChangeEvent;
 use crate::errors::*;
-use crate::state_manager::StateDiff;
-use crate::system::kernel_modules::costing::FeeSummary;
-use crate::system::kernel_modules::execution_trace::{
+use crate::system::system_modules::costing::FeeSummary;
+use crate::system::system_modules::execution_trace::{
     ExecutionTrace, ResourceChange, WorktopChange,
 };
+use crate::track::StateUpdates;
 use crate::types::*;
 use colored::*;
 use radix_engine_interface::address::AddressDisplayContext;
-use radix_engine_interface::api::types::*;
+use radix_engine_interface::api::ObjectModuleId;
 use radix_engine_interface::blueprints::transaction_processor::InstructionOutput;
-use radix_engine_interface::data::scrypto::{ScryptoDecode, ScryptoValueDisplayContext};
+use radix_engine_interface::data::scrypto::ScryptoDecode;
+use radix_engine_interface::types::*;
+use sbor::representations::*;
 use utils::ContextualDisplay;
-
-#[cfg(feature = "serde")]
-use sbor::serde_serialization::{SborPayloadWithSchema, SerializationContext, SerializationMode};
-#[cfg(feature = "serde")]
-use utils::ContextualSerialize;
 
 #[derive(Debug, Clone, Default, ScryptoSbor)]
 pub struct ResourcesUsage {
@@ -25,11 +23,11 @@ pub struct ResourcesUsage {
     pub cpu_cycles: u64,
 }
 
-#[derive(Debug, Clone, ScryptoSbor)]
+#[derive(Debug, Clone, ScryptoSbor, Default)]
 pub struct TransactionExecutionTrace {
     pub execution_traces: Vec<ExecutionTrace>,
     pub resource_changes: IndexMap<usize, Vec<ResourceChange>>,
-    pub resources_usage: ResourcesUsage,
+    pub fee_locks: FeeLocks,
 }
 
 impl TransactionExecutionTrace {
@@ -40,6 +38,12 @@ impl TransactionExecutionTrace {
         }
         aggregator
     }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, ScryptoSbor, Default)]
+pub struct FeeLocks {
+    pub lock: Decimal,
+    pub contingent_lock: Decimal,
 }
 
 /// Captures whether a transaction should be committed, and its other results
@@ -61,80 +65,46 @@ impl TransactionResult {
 
 #[derive(Debug, Clone, ScryptoSbor)]
 pub struct CommitResult {
-    pub state_updates: StateDiff,
+    pub state_updates: StateUpdates,
     pub state_update_summary: StateUpdateSummary,
     pub outcome: TransactionOutcome,
     pub fee_summary: FeeSummary,
-    pub fee_payments: IndexMap<ObjectId, Decimal>,
     pub application_events: Vec<(EventTypeIdentifier, Vec<u8>)>,
     pub application_logs: Vec<(Level, String)>,
-}
-
-#[derive(Debug, Clone, ScryptoSbor)]
-pub struct StateUpdateSummary {
-    pub new_packages: Vec<PackageAddress>,
-    pub new_components: Vec<ComponentAddress>,
-    pub new_resources: Vec<ResourceAddress>,
-    pub balance_changes: IndexMap<Address, IndexMap<ResourceAddress, BalanceChange>>,
-    /// This field accounts for two conditions:
-    /// 1. Direct vault recalls (and the owner is not loaded during the transaction);
-    /// 2. Fee payments for failed transactions.
-    pub direct_vault_updates: IndexMap<ObjectId, IndexMap<ResourceAddress, BalanceChange>>,
-}
-
-#[derive(Debug, Clone, ScryptoSbor, PartialEq, Eq)]
-pub enum BalanceChange {
-    Fungible(Decimal),
-    NonFungible {
-        added: BTreeSet<NonFungibleLocalId>,
-        removed: BTreeSet<NonFungibleLocalId>,
-    },
-}
-
-impl BalanceChange {
-    pub fn fungible(&mut self) -> &mut Decimal {
-        match self {
-            BalanceChange::Fungible(x) => x,
-            BalanceChange::NonFungible { .. } => panic!("Not fungible"),
-        }
-    }
-    pub fn added_non_fungibles(&mut self) -> &mut BTreeSet<NonFungibleLocalId> {
-        match self {
-            BalanceChange::Fungible(..) => panic!("Not non fungible"),
-            BalanceChange::NonFungible { added, .. } => added,
-        }
-    }
-    pub fn removed_non_fungibles(&mut self) -> &mut BTreeSet<NonFungibleLocalId> {
-        match self {
-            BalanceChange::Fungible(..) => panic!("Not non fungible"),
-            BalanceChange::NonFungible { removed, .. } => removed,
-        }
-    }
+    /// Optional, only when `EnabledModule::ExecutionTrace` is ON.
+    /// Mainly for transaction preview.
+    pub execution_trace: TransactionExecutionTrace,
 }
 
 impl CommitResult {
-    pub fn next_epoch(&self) -> Option<(BTreeMap<ComponentAddress, Validator>, u64)> {
+    pub fn empty_with_outcome(outcome: TransactionOutcome) -> Self {
+        Self {
+            state_updates: Default::default(),
+            state_update_summary: Default::default(),
+            outcome,
+            fee_summary: Default::default(),
+            application_events: Default::default(),
+            application_logs: Default::default(),
+            execution_trace: Default::default(),
+        }
+    }
+
+    pub fn next_epoch(&self) -> Option<EpochChangeEvent> {
         // Note: Node should use a well-known index id
         for (ref event_type_id, ref event_data) in self.application_events.iter() {
             if let EventTypeIdentifier(
-                Emitter::Function(
-                    RENodeId::GlobalObject(Address::Package(EPOCH_MANAGER_PACKAGE)),
-                    NodeModuleId::SELF,
-                    ..,
-                )
-                | Emitter::Method(
-                    RENodeId::GlobalObject(Address::Component(ComponentAddress::EpochManager(..))),
-                    NodeModuleId::SELF,
-                ),
+                Emitter::Function(node_id, ObjectModuleId::Main, ..)
+                | Emitter::Method(node_id, ObjectModuleId::Main),
                 ..,
             ) = event_type_id
             {
-                if let Ok(EpochChangeEvent {
-                    ref epoch,
-                    ref validators,
-                }) = scrypto_decode(&event_data)
+                if node_id == CONSENSUS_MANAGER_PACKAGE.as_node_id()
+                    || node_id.entity_type() == Some(EntityType::GlobalConsensusManager)
                 {
-                    return Some((validators.clone(), *epoch));
+                    if let Ok(epoch_change_event) = scrypto_decode::<EpochChangeEvent>(&event_data)
+                    {
+                        return Some(epoch_change_event);
+                    }
                 }
             }
         }
@@ -153,13 +123,15 @@ impl CommitResult {
         &self.state_update_summary.new_resources
     }
 
-    pub fn balance_changes(&self) -> &IndexMap<Address, IndexMap<ResourceAddress, BalanceChange>> {
+    pub fn balance_changes(
+        &self,
+    ) -> &IndexMap<GlobalAddress, IndexMap<ResourceAddress, BalanceChange>> {
         &self.state_update_summary.balance_changes
     }
 
     pub fn direct_vault_updates(
         &self,
-    ) -> &IndexMap<ObjectId, IndexMap<ResourceAddress, BalanceChange>> {
+    ) -> &IndexMap<NodeId, IndexMap<ResourceAddress, BalanceChange>> {
         &self.state_update_summary.direct_vault_updates
     }
 
@@ -195,6 +167,13 @@ impl TransactionOutcome {
         }
     }
 
+    pub fn expect_failure(&self) -> &RuntimeError {
+        match self {
+            TransactionOutcome::Success(_) => panic!("Outcome was an unexpected success"),
+            TransactionOutcome::Failure(error) => error,
+        }
+    }
+
     pub fn success_or_else<E, F: Fn(&RuntimeError) -> E>(
         &self,
         f: F,
@@ -224,14 +203,23 @@ pub enum AbortReason {
 /// Represents a transaction receipt.
 #[derive(Clone, ScryptoSbor)]
 pub struct TransactionReceipt {
-    pub result: TransactionResult,
-    pub execution_trace: TransactionExecutionTrace,
+    pub transaction_result: TransactionResult,
+    /// Optional, only when compile-time feature flag `resources_usage` is ON.
+    pub resources_usage: ResourcesUsage,
 }
 
 impl TransactionReceipt {
+    /// An empty receipt for merging changes into.
+    pub fn empty_with_commit(commit_result: CommitResult) -> Self {
+        Self {
+            transaction_result: TransactionResult::Commit(commit_result),
+            resources_usage: Default::default(),
+        }
+    }
+
     pub fn is_commit_success(&self) -> bool {
         matches!(
-            self.result,
+            self.transaction_result,
             TransactionResult::Commit(CommitResult {
                 outcome: TransactionOutcome::Success(_),
                 ..
@@ -241,7 +229,7 @@ impl TransactionReceipt {
 
     pub fn is_commit_failure(&self) -> bool {
         matches!(
-            self.result,
+            self.transaction_result,
             TransactionResult::Commit(CommitResult {
                 outcome: TransactionOutcome::Failure(_),
                 ..
@@ -250,21 +238,22 @@ impl TransactionReceipt {
     }
 
     pub fn is_rejection(&self) -> bool {
-        matches!(self.result, TransactionResult::Reject(_))
+        matches!(self.transaction_result, TransactionResult::Reject(_))
     }
 
     pub fn expect_commit(&self, success: bool) -> &CommitResult {
-        match &self.result {
+        match &self.transaction_result {
             TransactionResult::Commit(c) => {
                 if c.outcome.is_success() != success {
                     panic!(
-                        "Expected {} but was {}",
+                        "Expected {} but was {}: {:?}",
                         if success { "success" } else { "failure" },
                         if c.outcome.is_success() {
                             "success"
                         } else {
                             "failure"
-                        }
+                        },
+                        c.outcome
                     )
                 }
                 c
@@ -283,7 +272,7 @@ impl TransactionReceipt {
     }
 
     pub fn expect_rejection(&self) -> &RejectionError {
-        match &self.result {
+        match &self.transaction_result {
             TransactionResult::Commit(..) => panic!("Expected rejection but was commit"),
             TransactionResult::Reject(ref r) => &r.error,
             TransactionResult::Abort(..) => panic!("Expected rejection but was abort"),
@@ -291,10 +280,22 @@ impl TransactionReceipt {
     }
 
     pub fn expect_abortion(&self) -> &AbortReason {
-        match &self.result {
+        match &self.transaction_result {
             TransactionResult::Commit(..) => panic!("Expected abortion but was commit"),
             TransactionResult::Reject(..) => panic!("Expected abortion but was reject"),
             TransactionResult::Abort(ref r) => &r.reason,
+        }
+    }
+
+    pub fn expect_not_success(&self) {
+        match &self.transaction_result {
+            TransactionResult::Commit(c) => {
+                if c.outcome.is_success() {
+                    panic!("Transaction succeeded unexpectedly")
+                }
+            }
+            TransactionResult::Reject(..) => {}
+            TransactionResult::Abort(..) => {}
         }
     }
 
@@ -302,7 +303,7 @@ impl TransactionReceipt {
     where
         F: Fn(&RejectionError) -> bool,
     {
-        match &self.result {
+        match &self.transaction_result {
             TransactionResult::Commit(..) => panic!("Expected rejection but was committed"),
             TransactionResult::Reject(result) => {
                 if !f(&result.error) {
@@ -316,25 +317,45 @@ impl TransactionReceipt {
         }
     }
 
-    pub fn expect_specific_failure<F>(&self, f: F)
-    where
-        F: Fn(&RuntimeError) -> bool,
-    {
-        match &self.result {
+    pub fn expect_failure(&self) -> &RuntimeError {
+        match &self.transaction_result {
             TransactionResult::Commit(c) => match &c.outcome {
                 TransactionOutcome::Success(_) => panic!("Expected failure but was success"),
-                TransactionOutcome::Failure(err) => {
-                    if !f(&err) {
-                        panic!(
-                            "Expected specific failure but was different error:\n{:?}",
-                            self
-                        );
-                    }
-                }
+                TransactionOutcome::Failure(error) => error,
             },
             TransactionResult::Reject(_) => panic!("Transaction was rejected"),
             TransactionResult::Abort(..) => panic!("Transaction was aborted"),
         }
+    }
+
+    pub fn expect_specific_failure<F>(&self, f: F)
+    where
+        F: Fn(&RuntimeError) -> bool,
+    {
+        if !f(self.expect_failure()) {
+            panic!(
+                "Expected specific failure but was different error:\n{:?}",
+                self
+            );
+        }
+    }
+
+    pub fn expect_auth_failure(&self) {
+        self.expect_specific_failure(|e| {
+            matches!(
+                e,
+                RuntimeError::SystemModuleError(SystemModuleError::AuthError(..))
+            )
+        })
+    }
+
+    pub fn expect_auth_mutability_failure(&self) {
+        self.expect_specific_failure(|e| {
+            matches!(
+                e,
+                RuntimeError::SystemError(SystemError::MutatingImmutableSubstate)
+            )
+        })
     }
 }
 
@@ -360,14 +381,14 @@ impl fmt::Debug for TransactionReceipt {
 
 #[derive(Default)]
 pub struct TransactionReceiptDisplayContext<'a> {
-    pub encoder: Option<&'a Bech32Encoder>,
+    pub encoder: Option<&'a AddressBech32Encoder>,
     pub schema_lookup_callback:
         Option<Box<dyn Fn(&EventTypeIdentifier) -> Option<(LocalTypeIndex, ScryptoSchema)> + 'a>>,
 }
 
 impl<'a> TransactionReceiptDisplayContext<'a> {
-    pub fn scrypto_value_display_context(&self) -> ScryptoValueDisplayContext<'a> {
-        ScryptoValueDisplayContext::with_optional_bench32(self.encoder)
+    pub fn display_context(&self) -> ScryptoValueDisplayContext<'a> {
+        ScryptoValueDisplayContext::with_optional_bech32(self.encoder)
     }
 
     pub fn address_display_context(&self) -> AddressDisplayContext<'a> {
@@ -390,8 +411,8 @@ impl<'a> TransactionReceiptDisplayContext<'a> {
     }
 }
 
-impl<'a> From<&'a Bech32Encoder> for TransactionReceiptDisplayContext<'a> {
-    fn from(encoder: &'a Bech32Encoder) -> Self {
+impl<'a> From<&'a AddressBech32Encoder> for TransactionReceiptDisplayContext<'a> {
+    fn from(encoder: &'a AddressBech32Encoder) -> Self {
         Self {
             encoder: Some(encoder),
             schema_lookup_callback: None,
@@ -399,8 +420,8 @@ impl<'a> From<&'a Bech32Encoder> for TransactionReceiptDisplayContext<'a> {
     }
 }
 
-impl<'a> From<Option<&'a Bech32Encoder>> for TransactionReceiptDisplayContext<'a> {
-    fn from(encoder: Option<&'a Bech32Encoder>) -> Self {
+impl<'a> From<Option<&'a AddressBech32Encoder>> for TransactionReceiptDisplayContext<'a> {
+    fn from(encoder: Option<&'a AddressBech32Encoder>) -> Self {
         Self {
             encoder,
             schema_lookup_callback: None,
@@ -418,7 +439,7 @@ impl<'a> TransactionReceiptDisplayContextBuilder<'a> {
         })
     }
 
-    pub fn encoder(mut self, encoder: &'a Bech32Encoder) -> Self {
+    pub fn encoder(mut self, encoder: &'a AddressBech32Encoder) -> Self {
         self.0.encoder = Some(encoder);
         self
     }
@@ -444,8 +465,8 @@ impl<'a> ContextualDisplay<TransactionReceiptDisplayContext<'a>> for Transaction
         f: &mut F,
         context: &TransactionReceiptDisplayContext<'a>,
     ) -> Result<(), Self::Error> {
-        let result = &self.result;
-        let scrypto_value_display_context = context.scrypto_value_display_context();
+        let result = &self.transaction_result;
+        let scrypto_value_display_context = context.display_context();
         let address_display_context = context.address_display_context();
 
         write!(
@@ -507,15 +528,6 @@ impl<'a> ContextualDisplay<TransactionReceiptDisplayContext<'a>> for Transaction
             )?;
             for (i, (event_type_identifier, event_data)) in c.application_events.iter().enumerate()
             {
-                #[cfg(not(feature = "serde"))]
-                display_event_with_network_context(
-                    f,
-                    prefix!(i, c.application_events),
-                    event_type_identifier,
-                    event_data,
-                    context,
-                )?;
-                #[cfg(feature = "serde")]
                 if context.schema_lookup_callback.is_some() {
                     display_event_with_network_and_schema_context(
                         f,
@@ -545,7 +557,15 @@ impl<'a> ContextualDisplay<TransactionReceiptDisplayContext<'a>> for Transaction
                         match output {
                             InstructionOutput::CallReturn(x) => IndexedScryptoValue::from_slice(&x)
                                 .expect("Impossible case! Instruction output can't be decoded")
-                                .to_string(scrypto_value_display_context),
+                                .to_string(ValueDisplayParameters::Schemaless {
+                                    display_mode: DisplayMode::RustLike,
+                                    print_mode: PrintMode::MultiLine {
+                                        indent_size: 2,
+                                        base_indent: 3,
+                                        first_line_indent: 0
+                                    },
+                                    custom_context: scrypto_value_display_context
+                                }),
                             InstructionOutput::None => "None".to_string(),
                         }
                     )?;
@@ -567,7 +587,9 @@ impl<'a> ContextualDisplay<TransactionReceiptDisplayContext<'a>> for Transaction
             for (i, (address, resource, delta)) in balance_changes.iter().enumerate() {
                 write!(
                     f,
-                    "\n{} Entity: {}, Address: {}, Delta: {}",
+                    // NB - we use ResAddr instead of Resource to protect people who read new resources as
+                    //      `Resource: ` from the receipts (see eg resim.sh)
+                    "\n{} Entity: {}\n   ResAddr: {}\n   Change: {}",
                     prefix!(i, balance_changes),
                     address.display(address_display_context),
                     resource.display(address_display_context),
@@ -595,7 +617,9 @@ impl<'a> ContextualDisplay<TransactionReceiptDisplayContext<'a>> for Transaction
             for (i, (object_id, resource, delta)) in direct_vault_updates.iter().enumerate() {
                 write!(
                     f,
-                    "\n{} Vault: {}, Address: {}, Delta: {}",
+                    // NB - we use ResAddr instead of Resource to protect people who read new resources as
+                    //      `Resource: ` from the receipts (see eg resim.sh)
+                    "\n{} Vault: {}\n   ResAddr: {}\n   Change: {}",
                     prefix!(i, direct_vault_updates),
                     hex::encode(object_id),
                     resource.display(address_display_context),
@@ -657,18 +681,25 @@ fn display_event_with_network_context<'a, F: fmt::Write>(
         IndexedScryptoValue::from_slice(&event_data).expect("Event must be decodable!");
     write!(
         f,
-        "\n{} Emitter: {}, Local Type Index: {:?}, Data: {}",
+        "\n{} Emitter: {}\n   Local Type Index: {:?}\n   Data: {}",
         prefix,
         event_type_identifier
             .0
             .display(receipt_context.address_display_context()),
         event_type_identifier.1,
-        event_data_value.display(receipt_context.scrypto_value_display_context())
+        event_data_value.display(ValueDisplayParameters::Schemaless {
+            display_mode: DisplayMode::RustLike,
+            print_mode: PrintMode::MultiLine {
+                indent_size: 2,
+                base_indent: 3,
+                first_line_indent: 0
+            },
+            custom_context: receipt_context.display_context(),
+        })
     )?;
     Ok(())
 }
 
-#[cfg(feature = "serde")]
 fn display_event_with_network_and_schema_context<'a, F: fmt::Write>(
     f: &mut F,
     prefix: &str,
@@ -682,21 +713,24 @@ fn display_event_with_network_and_schema_context<'a, F: fmt::Write>(
         .map_or(Err(fmt::Error), Ok)?;
 
     // Based on the event data and schema, get an invertible json string representation.
-    let event = {
-        let payload =
-            SborPayloadWithSchema::<ScryptoCustomTypeExtension>::new(&event_data, local_type_index);
-        let serializable = payload.serializable(SerializationContext {
-            mode: SerializationMode::Invertible,
+    let event = ScryptoRawPayload::new_from_valid_slice(event_data).to_string(
+        ValueDisplayParameters::Annotated {
+            display_mode: DisplayMode::RustLike,
+            print_mode: PrintMode::MultiLine {
+                indent_size: 2,
+                base_indent: 3,
+                first_line_indent: 0,
+            },
+            custom_context: receipt_context.display_context(),
             schema: &schema,
-            custom_context: receipt_context.scrypto_value_display_context(),
-        });
-        serde_json::to_string(&serializable).map_err(|_| fmt::Error)
-    }?;
+            type_index: local_type_index,
+        },
+    );
 
     // Print the event information
     write!(
         f,
-        "\n{} Emitter: {}, Event: {}",
+        "\n{} Emitter: {}\n   Event: {}",
         prefix,
         event_type_identifier
             .0

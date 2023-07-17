@@ -9,7 +9,7 @@ mod key_value_store_test {
     }
 
     impl KeyValueStoreTest {
-        pub fn new_kv_store_into_vector() -> ComponentAddress {
+        pub fn new_kv_store_into_vector() -> Global<KeyValueStoreTest> {
             let map = KeyValueStore::new();
             map.get(&"hello".to_owned());
             let mut vector = Vec::new();
@@ -21,10 +21,11 @@ mod key_value_store_test {
                 kv_stores,
             }
             .instantiate()
+            .prepare_to_globalize(OwnerRole::None)
             .globalize()
         }
 
-        pub fn new_kv_store_into_kv_store() -> ComponentAddress {
+        pub fn new_kv_store_into_kv_store() -> Global<KeyValueStoreTest> {
             let map = KeyValueStore::new();
             let vector = Vec::new();
             let kv_stores = KeyValueStore::new();
@@ -35,10 +36,11 @@ mod key_value_store_test {
                 kv_stores,
             }
             .instantiate()
+            .prepare_to_globalize(OwnerRole::None)
             .globalize()
         }
 
-        pub fn new_kv_store_into_map_then_get() -> ComponentAddress {
+        pub fn new_kv_store_into_map_then_get() -> Global<KeyValueStoreTest> {
             let kv_store = KeyValueStore::new();
             let kv_stores = KeyValueStore::new();
             kv_stores.insert("hello".to_owned(), kv_store);
@@ -52,10 +54,11 @@ mod key_value_store_test {
                 kv_stores,
             }
             .instantiate()
+            .prepare_to_globalize(OwnerRole::None)
             .globalize()
         }
 
-        pub fn new_kv_store_with_get() -> ComponentAddress {
+        pub fn new_kv_store_with_get() -> Global<KeyValueStoreTest> {
             let map = KeyValueStore::new();
             map.get(&"hello".to_owned());
             let kv_stores = KeyValueStore::new();
@@ -65,10 +68,11 @@ mod key_value_store_test {
                 kv_stores,
             }
             .instantiate()
+            .prepare_to_globalize(OwnerRole::None)
             .globalize()
         }
 
-        pub fn new_kv_store_with_put() -> ComponentAddress {
+        pub fn new_kv_store_with_put() -> Global<KeyValueStoreTest> {
             let map = KeyValueStore::new();
             map.insert("hello".to_owned(), "world".to_owned());
             let kv_stores = KeyValueStore::new();
@@ -78,6 +82,7 @@ mod key_value_store_test {
                 kv_stores,
             }
             .instantiate()
+            .prepare_to_globalize(OwnerRole::None)
             .globalize()
         }
 

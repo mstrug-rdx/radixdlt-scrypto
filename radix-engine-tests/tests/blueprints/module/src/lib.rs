@@ -1,5 +1,4 @@
 use scrypto::api::node_modules::auth::*;
-use scrypto::api::node_modules::metadata::*;
 use scrypto::api::node_modules::royalty::*;
 use scrypto::api::*;
 use scrypto::engine::scrypto_env::*;
@@ -7,7 +6,8 @@ use scrypto::prelude::*;
 
 #[blueprint]
 mod component_module {
-    use crate::{AccessRules, RoyaltyConfig};
+    use crate::ComponentRoyaltyConfig;
+    use std::collections::BTreeMap;
 
     struct ComponentModule {}
 
@@ -17,7 +17,7 @@ mod component_module {
 
             let rtn = ScryptoEnv
                 .call_function(
-                    METADATA_PACKAGE,
+                    METADATA_MODULE_PACKAGE,
                     METADATA_BLUEPRINT,
                     METADATA_CREATE_IDENT,
                     scrypto_encode(&MetadataCreateInput {}).unwrap(),
@@ -27,11 +27,11 @@ mod component_module {
 
             let rtn = ScryptoEnv
                 .call_function(
-                    ROYALTY_PACKAGE,
+                    ROYALTY_MODULE_PACKAGE,
                     COMPONENT_ROYALTY_BLUEPRINT,
                     COMPONENT_ROYALTY_CREATE_IDENT,
                     scrypto_encode(&ComponentRoyaltyCreateInput {
-                        royalty_config: RoyaltyConfig::default(),
+                        royalty_config: ComponentRoyaltyConfig::default(),
                     })
                     .unwrap(),
                 )
@@ -40,11 +40,12 @@ mod component_module {
 
             let rtn = ScryptoEnv
                 .call_function(
-                    ACCESS_RULES_PACKAGE,
+                    ACCESS_RULES_MODULE_PACKAGE,
                     ACCESS_RULES_BLUEPRINT,
                     ACCESS_RULES_CREATE_IDENT,
                     scrypto_encode(&AccessRulesCreateInput {
-                        access_rules: AccessRulesConfig::new(),
+                        owner_role: OwnerRole::None,
+                        roles: BTreeMap::new(),
                     })
                     .unwrap(),
                 )
@@ -53,16 +54,17 @@ mod component_module {
 
             let address = ScryptoEnv
                 .globalize(
-                    RENodeId::Object(component.component.0),
                     btreemap!(
-                        NodeModuleId::AccessRules => metadata.id(),
-                        NodeModuleId::Metadata => royalty.id(),
-                        NodeModuleId::ComponentRoyalty => access_rules.id(),
+                        ObjectModuleId::Main => *component.0.handle().as_node_id(),
+                        ObjectModuleId::AccessRules => metadata.0,
+                        ObjectModuleId::Metadata => royalty.0,
+                        ObjectModuleId::Royalty => access_rules.0,
                     ),
+                    None,
                 )
                 .unwrap();
 
-            address.into()
+            ComponentAddress::new_or_panic(address.into())
         }
     }
 }

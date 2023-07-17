@@ -1,18 +1,19 @@
 use crate::errors::ApplicationError;
 use crate::errors::RuntimeError;
-use crate::kernel::kernel_api::{KernelNodeApi, KernelSubstateApi};
-use native_sdk::resource::Vault;
+use native_sdk::resource::NativeVault;
 use native_sdk::runtime::Runtime;
 use radix_engine_interface::api::*;
 use radix_engine_interface::blueprints::access_controller::*;
-use radix_engine_interface::blueprints::clock::*;
+use radix_engine_interface::blueprints::consensus_manager::TimePrecision;
 use radix_engine_interface::blueprints::resource::*;
 use radix_engine_interface::time::TimeComparisonOperator;
 use sbor::rust::boxed::Box;
 
+use super::PrimaryRoleBadgeWithdrawAttemptState;
+use super::RecoveryRoleBadgeWithdrawAttemptState;
 use super::{
-    AccessControllerError, AccessControllerSubstate, PrimaryOperationState, PrimaryRoleState,
-    RecoveryOperationState, RecoveryRecoveryState,
+    AccessControllerError, AccessControllerSubstate, PrimaryRoleLockingState,
+    PrimaryRoleRecoveryAttemptState, RecoveryRoleRecoveryAttemptState, RecoveryRoleRecoveryState,
 };
 
 /// A trait which defines the interface for an access controller transition for a given trigger or
@@ -22,7 +23,7 @@ pub(super) trait Transition<I> {
 
     fn transition<Y>(&self, api: &mut Y, input: I) -> Result<Self::Output, RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>;
+        Y: ClientApi<RuntimeError>;
 }
 
 /// A trait which defines the interface for an access controller transition for a given trigger or
@@ -32,7 +33,7 @@ pub(super) trait TransitionMut<I> {
 
     fn transition_mut<Y>(&mut self, api: &mut Y, input: I) -> Result<Self::Output, RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>;
+        Y: ClientApi<RuntimeError>;
 }
 
 //=================================================
@@ -58,13 +59,13 @@ impl Transition<AccessControllerCreateProofStateMachineInput> for AccessControll
         _input: AccessControllerCreateProofStateMachineInput,
     ) -> Result<Self::Output, RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
+        Y: ClientApi<RuntimeError>,
     {
-        // Proofs can only be created when the primary role is unlocked - regardless of whether the
-        // controller is in recovery or normal operations.
+        // Proofs can only be created when the primary role is unlocked - regardless of any pending
+        // recovery or withdraw attempts.
         match self.state {
-            (PrimaryRoleState::Unlocked, _, _) => {
-                Vault(self.controlled_asset).sys_create_proof(api)
+            (PrimaryRoleLockingState::Unlocked, _, _, _, _) => {
+                Vault(self.controlled_asset).create_proof(api)
             }
             _ => access_controller_runtime_error!(OperationRequiresUnlockedPrimaryRole),
         }
@@ -86,12 +87,20 @@ impl TransitionMut<AccessControllerInitiateRecoveryAsPrimaryStateMachineInput>
         input: AccessControllerInitiateRecoveryAsPrimaryStateMachineInput,
     ) -> Result<Self::Output, RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
+        Y: ClientApi<RuntimeError>,
     {
         match self.state {
-            (_, ref mut primary_operations_state @ PrimaryOperationState::Normal, _) => {
-                // Transition the primary operations state from normal to recovery
-                *primary_operations_state = PrimaryOperationState::Recovery(input.proposal);
+            (
+                _,
+                ref mut
+                primary_role_recovery_attempt_state @ PrimaryRoleRecoveryAttemptState::NoRecoveryAttempt,
+                _,
+                _,
+                _,
+            ) => {
+                // Transition the primary recovery attempt state from normal to recovery
+                *primary_role_recovery_attempt_state =
+                    PrimaryRoleRecoveryAttemptState::RecoveryAttempt(input.proposal);
                 Ok(())
             }
             _ => Err(RuntimeError::ApplicationError(
@@ -120,34 +129,115 @@ impl TransitionMut<AccessControllerInitiateRecoveryAsRecoveryStateMachineInput>
         input: AccessControllerInitiateRecoveryAsRecoveryStateMachineInput,
     ) -> Result<Self::Output, RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
+        Y: ClientApi<RuntimeError>,
     {
         match self.state {
-            (_, _, ref mut recovery_operations_state @ RecoveryOperationState::Normal) => {
-                match self.timed_recovery_delay_in_minutes {
-                    Some(delay_in_minutes) => {
-                        let current_time = Runtime::sys_current_time(api, TimePrecision::Minute)?;
-                        let timed_recovery_allowed_after = current_time
-                            .add_minutes(delay_in_minutes as i64)
-                            .map_or(access_controller_runtime_error!(TimeOverflow), |instant| {
-                                Ok(instant)
-                            })?;
+            (
+                _,
+                _,
+                _,
+                ref mut recovery_role_recovery_attempt_state @ RecoveryRoleRecoveryAttemptState::NoRecoveryAttempt,
+                _,
+            ) => match self.timed_recovery_delay_in_minutes {
+                Some(delay_in_minutes) => {
+                    let current_time = Runtime::current_time(api, TimePrecision::Minute)?;
+                    let timed_recovery_allowed_after = current_time
+                        .add_minutes(delay_in_minutes as i64)
+                        .map_or(access_controller_runtime_error!(TimeOverflow), |instant| {
+                            Ok(instant)
+                        })?;
 
-                        *recovery_operations_state =
-                            RecoveryOperationState::Recovery(RecoveryRecoveryState::Timed {
-                                proposal: input.proposal,
-                                timed_recovery_allowed_after,
-                            });
-                        Ok(())
-                    }
-                    None => {
-                        *recovery_operations_state = RecoveryOperationState::Recovery(
-                            RecoveryRecoveryState::Untimed(input.proposal),
-                        );
-                        Ok(())
-                    }
+                    *recovery_role_recovery_attempt_state = RecoveryRoleRecoveryAttemptState::RecoveryAttempt(
+                        RecoveryRoleRecoveryState::TimedRecovery {
+                            proposal: input.proposal,
+                            timed_recovery_allowed_after,
+                        },
+                    );
+                    Ok(())
                 }
+                None => {
+                    *recovery_role_recovery_attempt_state = RecoveryRoleRecoveryAttemptState::RecoveryAttempt(
+                        RecoveryRoleRecoveryState::UntimedRecovery(input.proposal),
+                    );
+                    Ok(())
+                }
+            },
+            _ => Err(RuntimeError::ApplicationError(
+                ApplicationError::AccessControllerError(
+                    AccessControllerError::RecoveryAlreadyExistsForProposer {
+                        proposer: Proposer::Recovery,
+                    },
+                ),
+            )),
+        }
+    }
+}
+
+pub(super) struct AccessControllerInitiateBadgeWithdrawAttemptAsPrimaryStateMachineInput;
+
+impl TransitionMut<AccessControllerInitiateBadgeWithdrawAttemptAsPrimaryStateMachineInput>
+    for AccessControllerSubstate
+{
+    type Output = ();
+
+    fn transition_mut<Y>(
+        &mut self,
+        _api: &mut Y,
+        _input: AccessControllerInitiateBadgeWithdrawAttemptAsPrimaryStateMachineInput,
+    ) -> Result<Self::Output, RuntimeError>
+    where
+        Y: ClientApi<RuntimeError>,
+    {
+        match self.state {
+            (
+                _,
+                _,
+                ref mut
+                primary_role_withdraw_badge_attempt_state @ PrimaryRoleBadgeWithdrawAttemptState::NoBadgeWithdrawAttempt,
+                _,
+                _,
+            ) => {
+                // Transition the primary role withdraw attempt state to withdraw attempt
+                *primary_role_withdraw_badge_attempt_state = PrimaryRoleBadgeWithdrawAttemptState::BadgeWithdrawAttempt;
+                Ok(())
             }
+            _ => Err(RuntimeError::ApplicationError(
+                ApplicationError::AccessControllerError(
+                    AccessControllerError::BadgeWithdrawAttemptAlreadyExistsForProposer {
+                        proposer: Proposer::Primary,
+                    },
+                ),
+            )),
+        }
+    }
+}
+
+pub(super) struct AccessControllerInitiateBadgeWithdrawAttemptAsRecoveryStateMachineInput;
+
+impl TransitionMut<AccessControllerInitiateBadgeWithdrawAttemptAsRecoveryStateMachineInput>
+    for AccessControllerSubstate
+{
+    type Output = ();
+
+    fn transition_mut<Y>(
+        &mut self,
+        _api: &mut Y,
+        _input: AccessControllerInitiateBadgeWithdrawAttemptAsRecoveryStateMachineInput,
+    ) -> Result<Self::Output, RuntimeError>
+    where
+        Y: ClientApi<RuntimeError>,
+    {
+        match self.state {
+            (
+                _,
+                _,
+                _,
+                _,
+                ref mut recovery_role_badge_withdraw_attempt_state @ RecoveryRoleBadgeWithdrawAttemptState::NoBadgeWithdrawAttempt,
+            ) => {
+                *recovery_role_badge_withdraw_attempt_state = RecoveryRoleBadgeWithdrawAttemptState::BadgeWithdrawAttempt;
+                Ok(())
+            },
             _ => Err(RuntimeError::ApplicationError(
                 ApplicationError::AccessControllerError(
                     AccessControllerError::RecoveryAlreadyExistsForProposer {
@@ -174,10 +264,10 @@ impl TransitionMut<AccessControllerQuickConfirmPrimaryRoleRecoveryProposalStateM
         input: AccessControllerQuickConfirmPrimaryRoleRecoveryProposalStateMachineInput,
     ) -> Result<Self::Output, RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
+        Y: ClientApi<RuntimeError>,
     {
         match self.state {
-            (_, PrimaryOperationState::Recovery(ref proposal), _) => {
+            (_, PrimaryRoleRecoveryAttemptState::RecoveryAttempt(ref proposal), _, _, _) => {
                 let proposal = proposal.clone();
 
                 // Ensure that the caller has passed in the expected proposal
@@ -213,16 +303,18 @@ impl TransitionMut<AccessControllerQuickConfirmRecoveryRoleRecoveryProposalState
         input: AccessControllerQuickConfirmRecoveryRoleRecoveryProposalStateMachineInput,
     ) -> Result<Self::Output, RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
+        Y: ClientApi<RuntimeError>,
     {
         match self.state {
             (
                 _,
                 _,
-                RecoveryOperationState::Recovery(
-                    RecoveryRecoveryState::Untimed(ref proposal)
-                    | RecoveryRecoveryState::Timed { ref proposal, .. },
+                _,
+                RecoveryRoleRecoveryAttemptState::RecoveryAttempt(
+                    RecoveryRoleRecoveryState::UntimedRecovery(ref proposal)
+                    | RecoveryRoleRecoveryState::TimedRecovery { ref proposal, .. },
                 ),
+                _,
             ) => {
                 let proposal = proposal.clone();
 
@@ -236,6 +328,70 @@ impl TransitionMut<AccessControllerQuickConfirmRecoveryRoleRecoveryProposalState
             _ => Err(RuntimeError::ApplicationError(
                 ApplicationError::AccessControllerError(
                     AccessControllerError::NoRecoveryExistsForProposer {
+                        proposer: Proposer::Recovery,
+                    },
+                ),
+            )),
+        }
+    }
+}
+
+pub(super) struct AccessControllerQuickConfirmPrimaryRoleBadgeWithdrawAttemptStateMachineInput;
+
+impl TransitionMut<AccessControllerQuickConfirmPrimaryRoleBadgeWithdrawAttemptStateMachineInput>
+    for AccessControllerSubstate
+{
+    type Output = Bucket;
+
+    fn transition_mut<Y>(
+        &mut self,
+        api: &mut Y,
+        _input: AccessControllerQuickConfirmPrimaryRoleBadgeWithdrawAttemptStateMachineInput,
+    ) -> Result<Self::Output, RuntimeError>
+    where
+        Y: ClientApi<RuntimeError>,
+    {
+        match self.state {
+            (_, _, PrimaryRoleBadgeWithdrawAttemptState::BadgeWithdrawAttempt, _, _) => {
+                // Transition back to the initial state of the state machine
+                self.state = Default::default();
+                Vault(self.controlled_asset).take_all(api)
+            }
+            _ => Err(RuntimeError::ApplicationError(
+                ApplicationError::AccessControllerError(
+                    AccessControllerError::NoBadgeWithdrawAttemptExistsForProposer {
+                        proposer: Proposer::Primary,
+                    },
+                ),
+            )),
+        }
+    }
+}
+
+pub(super) struct AccessControllerQuickConfirmRecoveryRoleBadgeWithdrawAttemptStateMachineInput;
+
+impl TransitionMut<AccessControllerQuickConfirmRecoveryRoleBadgeWithdrawAttemptStateMachineInput>
+    for AccessControllerSubstate
+{
+    type Output = Bucket;
+
+    fn transition_mut<Y>(
+        &mut self,
+        api: &mut Y,
+        _input: AccessControllerQuickConfirmRecoveryRoleBadgeWithdrawAttemptStateMachineInput,
+    ) -> Result<Self::Output, RuntimeError>
+    where
+        Y: ClientApi<RuntimeError>,
+    {
+        match self.state {
+            (_, _, _, _, RecoveryRoleBadgeWithdrawAttemptState::BadgeWithdrawAttempt) => {
+                // Transition back to the initial state of the state machine
+                self.state = Default::default();
+                Vault(self.controlled_asset).take_all(api)
+            }
+            _ => Err(RuntimeError::ApplicationError(
+                ApplicationError::AccessControllerError(
+                    AccessControllerError::NoBadgeWithdrawAttemptExistsForProposer {
                         proposer: Proposer::Recovery,
                     },
                 ),
@@ -259,7 +415,7 @@ impl TransitionMut<AccessControllerTimedConfirmRecoveryStateMachineInput>
         input: AccessControllerTimedConfirmRecoveryStateMachineInput,
     ) -> Result<Self::Output, RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
+        Y: ClientApi<RuntimeError>,
     {
         // Timed confirm recovery can only be performed by the recovery role (this is checked
         // through access rules on the invocation itself) and can be performed in recovery mode
@@ -268,17 +424,21 @@ impl TransitionMut<AccessControllerTimedConfirmRecoveryStateMachineInput>
             (
                 _,
                 _,
-                RecoveryOperationState::Recovery(RecoveryRecoveryState::Timed {
-                    ref proposal,
-                    ref timed_recovery_allowed_after,
-                }),
+                _,
+                RecoveryRoleRecoveryAttemptState::RecoveryAttempt(
+                    RecoveryRoleRecoveryState::TimedRecovery {
+                        ref proposal,
+                        ref timed_recovery_allowed_after,
+                    },
+                ),
+                _,
             ) => {
                 let proposal = proposal.clone();
 
                 // Ensure that the caller has passed in the expected proposal
                 validate_recovery_proposal(&proposal, &input.proposal_to_confirm)?;
 
-                let recovery_time_has_elapsed = Runtime::sys_compare_against_current_time(
+                let recovery_time_has_elapsed = Runtime::compare_against_current_time(
                     api,
                     timed_recovery_allowed_after.clone(),
                     TimePrecision::Minute,
@@ -313,14 +473,14 @@ impl TransitionMut<AccessControllerCancelPrimaryRoleRecoveryProposalStateMachine
         _input: AccessControllerCancelPrimaryRoleRecoveryProposalStateMachineInput,
     ) -> Result<Self::Output, RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
+        Y: ClientApi<RuntimeError>,
     {
         // A recovery attempt can only be canceled when we're in recovery mode regardless of whether
         // primary is locked or unlocked
         match self.state {
-            (_, PrimaryOperationState::Recovery(..), _) => {
+            (_, PrimaryRoleRecoveryAttemptState::RecoveryAttempt(..), _, _, _) => {
                 // Transition from the recovery state to the normal operations state
-                self.state.1 = PrimaryOperationState::Normal;
+                self.state.1 = PrimaryRoleRecoveryAttemptState::NoRecoveryAttempt;
                 Ok(())
             }
             _ => Err(RuntimeError::ApplicationError(
@@ -347,19 +507,87 @@ impl TransitionMut<AccessControllerCancelRecoveryRoleRecoveryProposalStateMachin
         _input: AccessControllerCancelRecoveryRoleRecoveryProposalStateMachineInput,
     ) -> Result<Self::Output, RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
+        Y: ClientApi<RuntimeError>,
     {
         // A recovery attempt can only be canceled when we're in recovery mode regardless of whether
         // primary is locked or unlocked
         match self.state {
-            (_, _, RecoveryOperationState::Recovery(..)) => {
+            (_, _, _, RecoveryRoleRecoveryAttemptState::RecoveryAttempt(..), _) => {
                 // Transition from the recovery state to the normal operations state
-                self.state.2 = RecoveryOperationState::Normal;
+                self.state.3 = RecoveryRoleRecoveryAttemptState::NoRecoveryAttempt;
                 Ok(())
             }
             _ => Err(RuntimeError::ApplicationError(
                 ApplicationError::AccessControllerError(
                     AccessControllerError::NoRecoveryExistsForProposer {
+                        proposer: Proposer::Recovery,
+                    },
+                ),
+            )),
+        }
+    }
+}
+
+pub(super) struct AccessControllerCancelPrimaryRoleBadgeWithdrawAttemptStateMachineInput;
+
+impl TransitionMut<AccessControllerCancelPrimaryRoleBadgeWithdrawAttemptStateMachineInput>
+    for AccessControllerSubstate
+{
+    type Output = ();
+
+    fn transition_mut<Y>(
+        &mut self,
+        _api: &mut Y,
+        _input: AccessControllerCancelPrimaryRoleBadgeWithdrawAttemptStateMachineInput,
+    ) -> Result<Self::Output, RuntimeError>
+    where
+        Y: ClientApi<RuntimeError>,
+    {
+        // A badge withdraw attempt can only be canceled when it exists regardless of whether
+        // primary is locked or unlocked
+        match self.state {
+            (_, _, PrimaryRoleBadgeWithdrawAttemptState::BadgeWithdrawAttempt, _, _) => {
+                // Transition from the recovery state to the normal operations state
+                self.state.2 = PrimaryRoleBadgeWithdrawAttemptState::NoBadgeWithdrawAttempt;
+                Ok(())
+            }
+            _ => Err(RuntimeError::ApplicationError(
+                ApplicationError::AccessControllerError(
+                    AccessControllerError::NoBadgeWithdrawAttemptExistsForProposer {
+                        proposer: Proposer::Primary,
+                    },
+                ),
+            )),
+        }
+    }
+}
+
+pub(super) struct AccessControllerCancelRecoveryRoleBadgeWithdrawAttemptStateMachineInput;
+
+impl TransitionMut<AccessControllerCancelRecoveryRoleBadgeWithdrawAttemptStateMachineInput>
+    for AccessControllerSubstate
+{
+    type Output = ();
+
+    fn transition_mut<Y>(
+        &mut self,
+        _api: &mut Y,
+        _input: AccessControllerCancelRecoveryRoleBadgeWithdrawAttemptStateMachineInput,
+    ) -> Result<Self::Output, RuntimeError>
+    where
+        Y: ClientApi<RuntimeError>,
+    {
+        // A badge withdraw attempt can only be canceled when it exists regardless of whether
+        // primary is locked or unlocked
+        match self.state {
+            (_, _, _, _, RecoveryRoleBadgeWithdrawAttemptState::BadgeWithdrawAttempt) => {
+                // Transition from the recovery state to the normal operations state
+                self.state.4 = RecoveryRoleBadgeWithdrawAttemptState::NoBadgeWithdrawAttempt;
+                Ok(())
+            }
+            _ => Err(RuntimeError::ApplicationError(
+                ApplicationError::AccessControllerError(
+                    AccessControllerError::NoBadgeWithdrawAttemptExistsForProposer {
                         proposer: Proposer::Recovery,
                     },
                 ),
@@ -379,12 +607,12 @@ impl TransitionMut<AccessControllerLockPrimaryRoleStateMachineInput> for AccessC
         _input: AccessControllerLockPrimaryRoleStateMachineInput,
     ) -> Result<Self::Output, RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
+        Y: ClientApi<RuntimeError>,
     {
         // Primary can only be locked when it's unlocked
         match self.state {
-            (ref mut primary_state @ PrimaryRoleState::Unlocked, _, _) => {
-                *primary_state = PrimaryRoleState::Locked;
+            (ref mut primary_role_locking_state @ PrimaryRoleLockingState::Unlocked, ..) => {
+                *primary_role_locking_state = PrimaryRoleLockingState::Locked;
                 Ok(())
             }
             _ => Ok(()),
@@ -405,12 +633,12 @@ impl TransitionMut<AccessControllerUnlockPrimaryRoleStateMachineInput>
         _input: AccessControllerUnlockPrimaryRoleStateMachineInput,
     ) -> Result<Self::Output, RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
+        Y: ClientApi<RuntimeError>,
     {
         // Primary can only be unlocked when it's locked
         match self.state {
-            (ref mut primary_state @ PrimaryRoleState::Locked, _, _) => {
-                *primary_state = PrimaryRoleState::Unlocked;
+            (ref mut primary_role_locking_state @ PrimaryRoleLockingState::Locked, ..) => {
+                *primary_role_locking_state = PrimaryRoleLockingState::Unlocked;
                 Ok(())
             }
             _ => Ok(()),
@@ -433,7 +661,7 @@ impl TransitionMut<AccessControllerStopTimedRecoveryStateMachineInput>
         input: AccessControllerStopTimedRecoveryStateMachineInput,
     ) -> Result<Self::Output, RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
+        Y: ClientApi<RuntimeError>,
     {
         // We can only stop the timed recovery timer if we're in recovery mode. It doesn't matter
         // if primary is locked or unlocked
@@ -441,17 +669,19 @@ impl TransitionMut<AccessControllerStopTimedRecoveryStateMachineInput>
             (
                 _,
                 _,
-                RecoveryOperationState::Recovery(RecoveryRecoveryState::Timed {
-                    ref proposal, ..
-                }),
+                _,
+                RecoveryRoleRecoveryAttemptState::RecoveryAttempt(
+                    RecoveryRoleRecoveryState::TimedRecovery { ref proposal, .. },
+                ),
+                _,
             ) => {
                 // Ensure that the caller has passed in the expected proposal
                 validate_recovery_proposal(&proposal, &input.proposal)?;
 
                 // Transition from timed recovery to untimed recovery
-                self.state.2 = RecoveryOperationState::Recovery(RecoveryRecoveryState::Untimed(
-                    proposal.clone(),
-                ));
+                self.state.3 = RecoveryRoleRecoveryAttemptState::RecoveryAttempt(
+                    RecoveryRoleRecoveryState::UntimedRecovery(proposal.clone()),
+                );
 
                 Ok(())
             }

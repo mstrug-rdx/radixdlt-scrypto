@@ -35,11 +35,11 @@ mod tests {
                         &[],
                         &#code_hash
                     );
-                    fn type_data() -> Option<::sbor::TypeData<radix_engine_common::data::scrypto::ScryptoCustomTypeKind, ::sbor::GlobalTypeId>> {
-                        Some(::sbor::TypeData::struct_with_named_fields(
+                    fn type_data() -> ::sbor::TypeData<radix_engine_common::data::scrypto::ScryptoCustomTypeKind, ::sbor::GlobalTypeId> {
+                        ::sbor::TypeData::struct_with_named_fields(
                             stringify!(MyStruct),
                             ::sbor::rust::vec![],
-                        ))
+                        )
                     }
                     fn add_all_dependencies(aggregator: &mut ::sbor::TypeAggregator<radix_engine_common::data::scrypto::ScryptoCustomTypeKind >) {}
                 }
@@ -60,12 +60,6 @@ mod tests {
                 where
                     T: ::sbor::Describe<
                         radix_engine_common::data::scrypto::ScryptoCustomTypeKind
-                    >,
-                    T: ::sbor::Categorize<
-                        <
-                            radix_engine_common::data::scrypto::ScryptoCustomTypeKind
-                            as ::sbor::CustomTypeKind<::sbor::GlobalTypeId>
-                        >::CustomValueKind
                     >
                 {
                     const TYPE_ID: ::sbor::GlobalTypeId = ::sbor::GlobalTypeId::novel_with_code(
@@ -73,13 +67,13 @@ mod tests {
                         &[<T>::TYPE_ID,],
                         &#code_hash
                     );
-                    fn type_data() -> Option<::sbor::TypeData<radix_engine_common::data::scrypto::ScryptoCustomTypeKind, ::sbor::GlobalTypeId>> {
-                        Some(::sbor::TypeData::struct_with_named_fields(
+                    fn type_data() -> ::sbor::TypeData<radix_engine_common::data::scrypto::ScryptoCustomTypeKind, ::sbor::GlobalTypeId> {
+                        ::sbor::TypeData::struct_with_named_fields(
                             stringify!(Thing),
                             ::sbor::rust::vec![
                                 ("field", <T as ::sbor::Describe<radix_engine_common::data::scrypto::ScryptoCustomTypeKind >>::TYPE_ID),
                             ],
-                        ))
+                        )
                     }
                     fn add_all_dependencies(aggregator: &mut ::sbor::TypeAggregator<radix_engine_common::data::scrypto::ScryptoCustomTypeKind >) {
                         aggregator.add_child_type_and_descendents::<T>();
@@ -102,27 +96,23 @@ mod tests {
                 impl<T: Bound>
                     ::sbor::Describe<radix_engine_common::data::scrypto::ScryptoCustomTypeKind > for MyEnum<T>
                 where
-                    T: ::sbor::Describe<radix_engine_common::data::scrypto::ScryptoCustomTypeKind >,
-                    T: ::sbor::Categorize< <
-                        radix_engine_common::data::scrypto::ScryptoCustomTypeKind
-                        as ::sbor::CustomTypeKind<::sbor::GlobalTypeId>
-                    >::CustomValueKind >
+                    T: ::sbor::Describe<radix_engine_common::data::scrypto::ScryptoCustomTypeKind >
                 {
                     const TYPE_ID: ::sbor::GlobalTypeId = ::sbor::GlobalTypeId::novel_with_code(
                         stringify!(MyEnum),
                         &[<T>::TYPE_ID,],
                         &#code_hash
                     );
-                    fn type_data() -> Option<::sbor::TypeData<radix_engine_common::data::scrypto::ScryptoCustomTypeKind, ::sbor::GlobalTypeId>> {
+                    fn type_data() -> ::sbor::TypeData<radix_engine_common::data::scrypto::ScryptoCustomTypeKind, ::sbor::GlobalTypeId> {
                         use ::sbor::rust::borrow::ToOwned;
-                        Some(::sbor::TypeData::enum_variants(
+                        ::sbor::TypeData::enum_variants(
                             stringify!(MyEnum),
                             :: sbor :: rust :: collections :: btree_map :: btreemap ! [
                                 0u8 => :: sbor :: TypeData :: struct_with_named_fields ("A", :: sbor :: rust :: vec ! [("named", < T as :: sbor :: Describe < radix_engine_common::data::scrypto::ScryptoCustomTypeKind >> :: TYPE_ID) ,] ,) ,
                                 1u8 => :: sbor :: TypeData :: struct_with_unnamed_fields ("B", :: sbor :: rust :: vec ! [< String as :: sbor :: Describe < radix_engine_common::data::scrypto::ScryptoCustomTypeKind >> :: TYPE_ID ,] ,) ,
                                 2u8 => :: sbor :: TypeData :: struct_with_unit_fields ("C") ,
                             ],
-                        ))
+                        )
                     }
                     fn add_all_dependencies(aggregator: &mut ::sbor::TypeAggregator<radix_engine_common::data::scrypto::ScryptoCustomTypeKind >) {
                         aggregator.add_child_type_and_descendents::<T>();

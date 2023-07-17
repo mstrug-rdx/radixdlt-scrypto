@@ -1,45 +1,15 @@
-use crate::api::types::*;
+use super::Proof;
 use crate::data::scrypto::model::Own;
-use crate::data::scrypto::model::*;
 use crate::data::scrypto::ScryptoCustomTypeKind;
 use crate::data::scrypto::ScryptoCustomValueKind;
 use crate::math::*;
 use crate::*;
-use sbor::rust::collections::BTreeSet;
-use sbor::rust::fmt::Debug;
+use radix_engine_common::data::scrypto::*;
+use radix_engine_common::types::*;
+use sbor::rust::prelude::*;
 use sbor::*;
 
-use super::Proof;
-
-pub const BUCKET_BLUEPRINT: &str = "Bucket";
-
-pub const BUCKET_BURN_IDENT: &str = "burn_bucket";
-
-#[derive(Debug, Eq, PartialEq, ScryptoSbor)]
-pub struct BucketBurnInput {
-    pub bucket: Bucket,
-}
-
-pub type BucketBurnOutput = ();
-
-impl Clone for BucketBurnInput {
-    fn clone(&self) -> Self {
-        Self {
-            bucket: Bucket(self.bucket.0),
-        }
-    }
-}
-
-pub const BUCKET_DROP_EMPTY_IDENT: &str = "Bucket_drop_empty";
-
-#[derive(Debug, Eq, PartialEq, ScryptoSbor)]
-pub struct BucketDropEmptyInput {
-    pub bucket: Bucket,
-}
-
-pub type BucketDropEmptyOutput = ();
-
-pub const BUCKET_TAKE_IDENT: &str = "Bucket_take";
+pub const BUCKET_TAKE_IDENT: &str = "take";
 
 #[derive(Debug, Clone, Eq, PartialEq, ScryptoSbor)]
 pub struct BucketTakeInput {
@@ -48,7 +18,7 @@ pub struct BucketTakeInput {
 
 pub type BucketTakeOutput = Bucket;
 
-pub const BUCKET_PUT_IDENT: &str = "Bucket_put";
+pub const BUCKET_PUT_IDENT: &str = "put";
 
 #[derive(Debug, Eq, PartialEq, ScryptoSbor)]
 pub struct BucketPutInput {
@@ -65,85 +35,72 @@ impl Clone for BucketPutInput {
     }
 }
 
-pub const BUCKET_TAKE_NON_FUNGIBLES_IDENT: &str = "Bucket_take_non_fungibles";
-
-#[derive(Debug, Clone, Eq, PartialEq, ScryptoSbor)]
-pub struct BucketTakeNonFungiblesInput {
-    pub ids: BTreeSet<NonFungibleLocalId>,
-}
-
-pub type BucketTakeNonFungiblesOutput = Bucket;
-
-pub const BUCKET_GET_NON_FUNGIBLE_LOCAL_IDS_IDENT: &str = "Bucket_get_non_fungible_local_ids";
-
-#[derive(Debug, Clone, Eq, PartialEq, ScryptoSbor)]
-pub struct BucketGetNonFungibleLocalIdsInput {}
-
-pub type BucketGetNonFungibleLocalIdsOutput = BTreeSet<NonFungibleLocalId>;
-
-pub const BUCKET_GET_AMOUNT_IDENT: &str = "Bucket_get_amount";
+pub const BUCKET_GET_AMOUNT_IDENT: &str = "get_amount";
 
 #[derive(Debug, Clone, Eq, PartialEq, ScryptoSbor)]
 pub struct BucketGetAmountInput {}
 
 pub type BucketGetAmountOutput = Decimal;
 
-pub const BUCKET_GET_RESOURCE_ADDRESS_IDENT: &str = "Bucket_get_resource_address";
+pub const BUCKET_GET_RESOURCE_ADDRESS_IDENT: &str = "get_resource_address";
 
 #[derive(Debug, Clone, Eq, PartialEq, ScryptoSbor)]
 pub struct BucketGetResourceAddressInput {}
 
 pub type BucketGetResourceAddressOutput = ResourceAddress;
 
-pub const BUCKET_CREATE_PROOF_IDENT: &str = "Bucket_create_proof";
+pub const BUCKET_CREATE_PROOF_IDENT: &str = "create_proof";
 
 #[derive(Debug, Clone, Eq, PartialEq, ScryptoSbor)]
 pub struct BucketCreateProofInput {}
 
 pub type BucketCreateProofOutput = Proof;
 
-pub const BUCKET_LOCK_AMOUNT_IDENT: &str = "Bucket_lock_amount";
+pub const BUCKET_CREATE_PROOF_OF_AMOUNT_IDENT: &str = "create_proof_of_amount";
 
 #[derive(Debug, Clone, Eq, PartialEq, ScryptoSbor)]
-pub struct BucketLockAmountInput {
+pub struct BucketCreateProofOfAmountInput {
     pub amount: Decimal,
 }
 
-pub type BucketLockAmountOutput = ();
+pub type BucketCreateProofOfAmountOutput = Proof;
 
-pub const BUCKET_UNLOCK_AMOUNT_IDENT: &str = "Bucket_unlock_amount";
-
-#[derive(Debug, Clone, Eq, PartialEq, ScryptoSbor)]
-pub struct BucketUnlockAmountInput {
-    pub amount: Decimal,
-}
-
-pub type BucketUnlockAmountOutput = ();
-
-pub const BUCKET_LOCK_NON_FUNGIBLES_IDENT: &str = "Bucket_lock_non_fungibles";
+pub const BUCKET_CREATE_PROOF_OF_ALL_IDENT: &str = "create_proof_of_all";
 
 #[derive(Debug, Clone, Eq, PartialEq, ScryptoSbor)]
-pub struct BucketLockNonFungiblesInput {
-    pub local_ids: BTreeSet<NonFungibleLocalId>,
-}
+pub struct BucketCreateProofOfAllInput {}
 
-pub type BucketLockNonFungiblesOutput = ();
-
-pub const BUCKET_UNLOCK_NON_FUNGIBLES_IDENT: &str = "Bucket_unlock_non_fungibles";
-
-#[derive(Debug, Clone, Eq, PartialEq, ScryptoSbor)]
-pub struct BucketUnlockNonFungiblesInput {
-    pub local_ids: BTreeSet<NonFungibleLocalId>,
-}
-
-pub type BucketUnlockNonFungiblesOutput = ();
+pub type BucketCreateProofOfAllOutput = Proof;
 
 //========
 // Stub
 //========
 
 #[derive(Debug, PartialEq, Eq, Hash)]
-pub struct Bucket(pub ObjectId);
+#[must_use]
+pub struct Bucket(pub Own);
+
+#[derive(Debug, PartialEq, Eq, Hash, ScryptoEncode, ScryptoDecode, ScryptoCategorize)]
+#[sbor(transparent)]
+#[must_use]
+pub struct FungibleBucket(pub Bucket);
+
+#[derive(Debug, PartialEq, Eq, Hash, ScryptoEncode, ScryptoDecode, ScryptoCategorize)]
+#[sbor(transparent)]
+#[must_use]
+pub struct NonFungibleBucket(pub Bucket);
+
+impl From<FungibleBucket> for Bucket {
+    fn from(value: FungibleBucket) -> Self {
+        value.0
+    }
+}
+
+impl From<NonFungibleBucket> for Bucket {
+    fn from(value: NonFungibleBucket) -> Self {
+        value.0
+    }
+}
 
 //========
 // binary
@@ -152,7 +109,7 @@ pub struct Bucket(pub ObjectId);
 impl Categorize<ScryptoCustomValueKind> for Bucket {
     #[inline]
     fn value_kind() -> ValueKind<ScryptoCustomValueKind> {
-        ValueKind::Custom(ScryptoCustomValueKind::Own)
+        Own::value_kind()
     }
 }
 
@@ -164,7 +121,7 @@ impl<E: Encoder<ScryptoCustomValueKind>> Encode<ScryptoCustomValueKind, E> for B
 
     #[inline]
     fn encode_body(&self, encoder: &mut E) -> Result<(), EncodeError> {
-        Own::Bucket(self.0).encode_body(encoder)
+        self.0.encode_body(encoder)
     }
 }
 
@@ -173,16 +130,33 @@ impl<D: Decoder<ScryptoCustomValueKind>> Decode<ScryptoCustomValueKind, D> for B
         decoder: &mut D,
         value_kind: ValueKind<ScryptoCustomValueKind>,
     ) -> Result<Self, DecodeError> {
-        let o = Own::decode_body_with_value_kind(decoder, value_kind)?;
-        match o {
-            Own::Bucket(bucket_id) => Ok(Self(bucket_id)),
-            _ => Err(DecodeError::InvalidCustomValue),
-        }
+        Own::decode_body_with_value_kind(decoder, value_kind).map(|o| Self(o))
     }
 }
 
 impl Describe<ScryptoCustomTypeKind> for Bucket {
-    const TYPE_ID: GlobalTypeId = GlobalTypeId::well_known(
-        crate::data::scrypto::well_known_scrypto_custom_types::OWN_BUCKET_ID,
-    );
+    const TYPE_ID: GlobalTypeId =
+        GlobalTypeId::well_known(well_known_scrypto_custom_types::OWN_BUCKET_ID);
+
+    fn type_data() -> TypeData<ScryptoCustomTypeKind, GlobalTypeId> {
+        well_known_scrypto_custom_types::own_bucket_type_data()
+    }
+}
+
+impl Describe<ScryptoCustomTypeKind> for FungibleBucket {
+    const TYPE_ID: GlobalTypeId =
+        GlobalTypeId::well_known(well_known_scrypto_custom_types::OWN_FUNGIBLE_BUCKET_ID);
+
+    fn type_data() -> TypeData<ScryptoCustomTypeKind, GlobalTypeId> {
+        well_known_scrypto_custom_types::own_fungible_bucket_type_data()
+    }
+}
+
+impl Describe<ScryptoCustomTypeKind> for NonFungibleBucket {
+    const TYPE_ID: GlobalTypeId =
+        GlobalTypeId::well_known(well_known_scrypto_custom_types::OWN_NON_FUNGIBLE_BUCKET_ID);
+
+    fn type_data() -> TypeData<ScryptoCustomTypeKind, GlobalTypeId> {
+        well_known_scrypto_custom_types::own_non_fungible_bucket_type_data()
+    }
 }

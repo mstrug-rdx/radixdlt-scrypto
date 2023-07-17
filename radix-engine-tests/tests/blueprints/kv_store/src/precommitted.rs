@@ -9,11 +9,15 @@ mod precommitted {
     }
 
     impl Precommitted {
-        pub fn can_reference_precommitted_vault() -> ComponentAddress {
+        pub fn can_reference_precommitted_vault() -> Global<Precommitted> {
             let store = KeyValueStore::new();
-            let bucket: Bucket = ResourceBuilder::new_fungible()
+            let bucket: Bucket = ResourceBuilder::new_fungible(OwnerRole::None)
                 .divisibility(DIVISIBILITY_MAXIMUM)
-                .metadata("name", "TestToken")
+                .metadata(metadata! {
+                    init {
+                        "name" => "TestToken".to_owned(), locked;
+                    }
+                })
                 .mint_initial_supply(1);
             let vault = Vault::with_bucket(bucket);
             store.insert(0u32, vault);
@@ -27,10 +31,11 @@ mod precommitted {
                 deep_vault: KeyValueStore::new(),
             }
             .instantiate()
+            .prepare_to_globalize(OwnerRole::None)
             .globalize()
         }
 
-        pub fn can_reference_deep_precommitted_value() -> ComponentAddress {
+        pub fn can_reference_deep_precommitted_value() -> Global<Precommitted> {
             let deep_store = KeyValueStore::new();
             let sub_store = KeyValueStore::new();
             sub_store.insert(0u32, 2u32);
@@ -45,15 +50,20 @@ mod precommitted {
                 deep_vault: KeyValueStore::new(),
             }
             .instantiate()
+            .prepare_to_globalize(OwnerRole::None)
             .globalize()
         }
 
-        pub fn can_reference_deep_precommitted_vault() -> ComponentAddress {
+        pub fn can_reference_deep_precommitted_vault() -> Global<Precommitted> {
             let deep_vault = KeyValueStore::new();
             let sub_store = KeyValueStore::new();
-            let bucket: Bucket = ResourceBuilder::new_fungible()
+            let bucket: Bucket = ResourceBuilder::new_fungible(OwnerRole::None)
                 .divisibility(DIVISIBILITY_MAXIMUM)
-                .metadata("name", "TestToken")
+                .metadata(metadata! {
+                    init {
+                        "name" => "TestToken".to_owned(), locked;
+                    }
+                })
                 .mint_initial_supply(1);
             let vault = Vault::with_bucket(bucket);
             sub_store.insert(0u32, vault);
@@ -71,6 +81,7 @@ mod precommitted {
                 deep_vault,
             }
             .instantiate()
+            .prepare_to_globalize(OwnerRole::None)
             .globalize()
         }
     }

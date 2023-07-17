@@ -1,26 +1,14 @@
-SET_PACKAGE_ROYALTY_CONFIG
-    Address("package_sim1qr46xrzzzlgvqccwqptp9ujlqncamd6kexux05essnuqc933em")
-    Map<String, Tuple>(
-        "Blueprint",
-        Tuple(
-            Map<String, U32>(
-                "method", 1u32
-            ),
-            0u32
-        )
-    );
+SET_COMPONENT_ROYALTY
+    Address("${account_address}")
+    "my_method"
+    Enum<RoyaltyAmount::Free>();
 
-SET_COMPONENT_ROYALTY_CONFIG
-    Address("account_sim1qnkhnw506drsfhrjrzaw4aj2yrucezvj2w7jqqqm5zds7mngxh")
-    Tuple(
-        Map<String, U32>(
-            "method", 1u32
-        ),
-        0u32
-    );
+LOCK_COMPONENT_ROYALTY
+    Address("${account_address}")
+    "my_method";
 
-CLAIM_PACKAGE_ROYALTY
-    Address("package_sim1qr46xrzzzlgvqccwqptp9ujlqncamd6kexux05essnuqc933em");
+CLAIM_PACKAGE_ROYALTIES
+    Address("${package_address}");
 
-CLAIM_COMPONENT_ROYALTY
-    Address("account_sim1qnkhnw506drsfhrjrzaw4aj2yrucezvj2w7jqqqm5zds7mngxh");
+CLAIM_COMPONENT_ROYALTIES
+    Address("${account_address}");

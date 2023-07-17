@@ -1,883 +1,680 @@
+use super::AccountSubstate;
+use crate::blueprints::account::{AccountBlueprint, SECURIFY_ROLE};
+use crate::errors::ApplicationError;
 use crate::errors::RuntimeError;
-use crate::errors::{ApplicationError, InterpreterError};
-use crate::kernel::kernel_api::{KernelNodeApi, KernelSubstateApi};
-use crate::system::node::{RENodeInit, RENodeModuleInit};
-use crate::system::node_modules::type_info::TypeInfoSubstate;
+use crate::roles_template;
 use crate::types::*;
-use native_sdk::modules::access_rules::AccessRulesObject;
-use native_sdk::modules::metadata::Metadata;
-use native_sdk::modules::royalty::ComponentRoyalty;
-use radix_engine_interface::api::substate_api::LockFlags;
+use native_sdk::runtime::Runtime;
+use radix_engine_interface::api::system_modules::virtualization::VirtualLazyLoadInput;
 use radix_engine_interface::api::ClientApi;
 use radix_engine_interface::blueprints::account::*;
-use radix_engine_interface::blueprints::resource::AccessRule;
-use radix_engine_interface::blueprints::resource::AccessRulesConfig;
-use radix_engine_interface::blueprints::resource::MethodKey;
+use radix_engine_interface::blueprints::package::{
+    AuthConfig, BlueprintDefinitionInit, BlueprintType, FunctionAuth, MethodAuthTemplate,
+    PackageDefinition,
+};
 use radix_engine_interface::schema::{
-    BlueprintSchema, FunctionSchema, KeyValueStoreSchema, PackageSchema, Receiver,
+    BlueprintCollectionSchema, BlueprintEventSchemaInit, BlueprintFunctionsSchemaInit,
+    BlueprintKeyValueStoreSchema, BlueprintSchemaInit, BlueprintStateSchemaInit, FieldSchema,
+    FunctionSchemaInit, ReceiverInfo, TypeRef,
 };
 
-use crate::system::kernel_modules::costing::FIXED_LOW_FEE;
-use native_sdk::resource::{SysBucket, Vault};
-use radix_engine_interface::api::types::ClientCostingReason;
-
-#[derive(Debug, Clone, PartialEq, Eq, ScryptoSbor)]
-pub struct AccountSubstate {
-    /// An owned [`KeyValueStore`] which maps the [`ResourceAddress`] to an [`Own`] of the vault
-    /// containing that resource.
-    pub vaults: Own,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, ScryptoSbor)]
-pub enum AccountError {
-    VaultDoesNotExist { resource_address: ResourceAddress },
-}
-
-impl From<AccountError> for RuntimeError {
-    fn from(value: AccountError) -> Self {
-        Self::ApplicationError(ApplicationError::AccountError(value))
-    }
-}
-
-//================
-// Account Create
-//================
+const ACCOUNT_CREATE_VIRTUAL_SECP256K1_EXPORT_NAME: &str = "create_virtual_secp256k1";
+const ACCOUNT_CREATE_VIRTUAL_ED25519_EXPORT_NAME: &str = "create_virtual_ed25519";
 
 pub struct AccountNativePackage;
 
 impl AccountNativePackage {
-    pub fn schema() -> PackageSchema {
+    pub fn definition() -> PackageDefinition {
         let mut aggregator = TypeAggregator::<ScryptoCustomTypeKind>::new();
 
-        let mut substates = Vec::new();
-        substates.push(aggregator.add_child_type_and_descendents::<AccountSubstate>());
+        let mut fields = Vec::new();
+        fields.push(FieldSchema::static_field(
+            aggregator.add_child_type_and_descendents::<AccountSubstate>(),
+        ));
+
+        let mut collections = Vec::new();
+        collections.push(BlueprintCollectionSchema::KeyValueStore(
+            BlueprintKeyValueStoreSchema {
+                key: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<ResourceAddress>(),
+                ),
+                value: TypeRef::Static(aggregator.add_child_type_and_descendents::<Own>()),
+                can_own: true,
+            },
+        ));
+        collections.push(BlueprintCollectionSchema::KeyValueStore(
+            BlueprintKeyValueStoreSchema {
+                key: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<ResourceAddress>(),
+                ),
+                value: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<ResourceDepositRule>(),
+                ),
+                can_own: false,
+            },
+        ));
 
         let mut functions = BTreeMap::new();
+
         functions.insert(
-            ACCOUNT_CREATE_GLOBAL_IDENT.to_string(),
-            FunctionSchema {
+            ACCOUNT_CREATE_ADVANCED_IDENT.to_string(),
+            FunctionSchemaInit {
                 receiver: None,
-                input: aggregator.add_child_type_and_descendents::<AccountCreateGlobalInput>(),
-                output: aggregator.add_child_type_and_descendents::<AccountCreateGlobalOutput>(),
-                export_name: ACCOUNT_CREATE_GLOBAL_IDENT.to_string(),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountCreateAdvancedInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountCreateAdvancedOutput>(),
+                ),
+                export: ACCOUNT_CREATE_ADVANCED_IDENT.to_string(),
             },
         );
 
         functions.insert(
-            ACCOUNT_CREATE_LOCAL_IDENT.to_string(),
-            FunctionSchema {
+            ACCOUNT_CREATE_IDENT.to_string(),
+            FunctionSchemaInit {
                 receiver: None,
-                input: aggregator.add_child_type_and_descendents::<AccountCreateLocalInput>(),
-                output: aggregator.add_child_type_and_descendents::<AccountCreateLocalOutput>(),
-                export_name: ACCOUNT_CREATE_LOCAL_IDENT.to_string(),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountCreateInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountCreateOutput>(),
+                ),
+                export: ACCOUNT_CREATE_IDENT.to_string(),
+            },
+        );
+
+        functions.insert(
+            ACCOUNT_SECURIFY_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref_mut()),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountSecurifyInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountSecurifyOutput>(),
+                ),
+                export: ACCOUNT_SECURIFY_IDENT.to_string(),
             },
         );
 
         functions.insert(
             ACCOUNT_LOCK_FEE_IDENT.to_string(),
-            FunctionSchema {
-                receiver: Some(Receiver::SelfRef),
-                input: aggregator.add_child_type_and_descendents::<AccountLockFeeInput>(),
-                output: aggregator.add_child_type_and_descendents::<AccountLockFeeOutput>(),
-                export_name: ACCOUNT_LOCK_FEE_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref_mut()),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountLockFeeInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountLockFeeOutput>(),
+                ),
+                export: ACCOUNT_LOCK_FEE_IDENT.to_string(),
             },
         );
 
         functions.insert(
             ACCOUNT_LOCK_CONTINGENT_FEE_IDENT.to_string(),
-            FunctionSchema {
-                receiver: Some(Receiver::SelfRef),
-                input: aggregator.add_child_type_and_descendents::<AccountLockContingentFeeInput>(),
-                output: aggregator
-                    .add_child_type_and_descendents::<AccountLockContingentFeeOutput>(),
-                export_name: ACCOUNT_LOCK_CONTINGENT_FEE_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref_mut()),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountLockContingentFeeInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountLockContingentFeeOutput>(),
+                ),
+                export: ACCOUNT_LOCK_CONTINGENT_FEE_IDENT.to_string(),
             },
         );
 
         functions.insert(
             ACCOUNT_DEPOSIT_IDENT.to_string(),
-            FunctionSchema {
-                receiver: Some(Receiver::SelfRef),
-                input: aggregator.add_child_type_and_descendents::<AccountDepositInput>(),
-                output: aggregator.add_child_type_and_descendents::<AccountDepositOutput>(),
-                export_name: ACCOUNT_DEPOSIT_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref_mut()),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountDepositInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountDepositOutput>(),
+                ),
+                export: ACCOUNT_DEPOSIT_IDENT.to_string(),
             },
         );
 
         functions.insert(
             ACCOUNT_DEPOSIT_BATCH_IDENT.to_string(),
-            FunctionSchema {
-                receiver: Some(Receiver::SelfRef),
-                input: aggregator.add_child_type_and_descendents::<AccountDepositBatchInput>(),
-                output: aggregator.add_child_type_and_descendents::<AccountDepositBatchOutput>(),
-                export_name: ACCOUNT_DEPOSIT_BATCH_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref_mut()),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountDepositBatchInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountDepositBatchOutput>(),
+                ),
+                export: ACCOUNT_DEPOSIT_BATCH_IDENT.to_string(),
             },
         );
 
         functions.insert(
             ACCOUNT_WITHDRAW_IDENT.to_string(),
-            FunctionSchema {
-                receiver: Some(Receiver::SelfRef),
-                input: aggregator.add_child_type_and_descendents::<AccountWithdrawInput>(),
-                output: aggregator.add_child_type_and_descendents::<AccountWithdrawOutput>(),
-                export_name: ACCOUNT_WITHDRAW_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref_mut()),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountWithdrawInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountWithdrawOutput>(),
+                ),
+                export: ACCOUNT_WITHDRAW_IDENT.to_string(),
             },
         );
 
         functions.insert(
             ACCOUNT_WITHDRAW_NON_FUNGIBLES_IDENT.to_string(),
-            FunctionSchema {
-                receiver: Some(Receiver::SelfRef),
-                input: aggregator
-                    .add_child_type_and_descendents::<AccountWithdrawNonFungiblesInput>(),
-                output: aggregator
-                    .add_child_type_and_descendents::<AccountWithdrawNonFungiblesOutput>(),
-                export_name: ACCOUNT_WITHDRAW_NON_FUNGIBLES_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref_mut()),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountWithdrawNonFungiblesInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator
+                        .add_child_type_and_descendents::<AccountWithdrawNonFungiblesOutput>(),
+                ),
+                export: ACCOUNT_WITHDRAW_NON_FUNGIBLES_IDENT.to_string(),
+            },
+        );
+
+        functions.insert(
+            ACCOUNT_BURN_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref_mut()),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountBurnInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountBurnOutput>(),
+                ),
+                export: ACCOUNT_BURN_IDENT.to_string(),
+            },
+        );
+
+        functions.insert(
+            ACCOUNT_BURN_NON_FUNGIBLES_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref_mut()),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountBurnNonFungiblesInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountBurnNonFungiblesOutput>(),
+                ),
+                export: ACCOUNT_BURN_NON_FUNGIBLES_IDENT.to_string(),
             },
         );
 
         functions.insert(
             ACCOUNT_LOCK_FEE_AND_WITHDRAW_IDENT.to_string(),
-            FunctionSchema {
-                receiver: Some(Receiver::SelfRef),
-                input: aggregator
-                    .add_child_type_and_descendents::<AccountLockFeeAndWithdrawInput>(),
-                output: aggregator
-                    .add_child_type_and_descendents::<AccountLockFeeAndWithdrawOutput>(),
-                export_name: ACCOUNT_LOCK_FEE_AND_WITHDRAW_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref_mut()),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountLockFeeAndWithdrawInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountLockFeeAndWithdrawOutput>(),
+                ),
+                export: ACCOUNT_LOCK_FEE_AND_WITHDRAW_IDENT.to_string(),
             },
         );
 
         functions.insert(
             ACCOUNT_LOCK_FEE_AND_WITHDRAW_NON_FUNGIBLES_IDENT.to_string(),
-            FunctionSchema {
-                receiver: Some(Receiver::SelfRef),
-                input: aggregator
-                    .add_child_type_and_descendents::<AccountLockFeeAndWithdrawNonFungiblesInput>(),
-                output: aggregator
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref_mut()),
+                input: TypeRef::Static(aggregator
+                    .add_child_type_and_descendents::<AccountLockFeeAndWithdrawNonFungiblesInput>()),
+                output: TypeRef::Static(aggregator
                     .add_child_type_and_descendents::<AccountLockFeeAndWithdrawNonFungiblesOutput>(
-                    ),
-                export_name: ACCOUNT_LOCK_FEE_AND_WITHDRAW_NON_FUNGIBLES_IDENT.to_string(),
+                    )),
+                export: ACCOUNT_LOCK_FEE_AND_WITHDRAW_NON_FUNGIBLES_IDENT.to_string(),
             },
         );
 
         functions.insert(
             ACCOUNT_CREATE_PROOF_IDENT.to_string(),
-            FunctionSchema {
-                receiver: Some(Receiver::SelfRef),
-                input: aggregator.add_child_type_and_descendents::<AccountCreateProofInput>(),
-                output: aggregator.add_child_type_and_descendents::<AccountCreateProofOutput>(),
-                export_name: ACCOUNT_CREATE_PROOF_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref()),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountCreateProofInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountCreateProofOutput>(),
+                ),
+                export: ACCOUNT_CREATE_PROOF_IDENT.to_string(),
             },
         );
 
         functions.insert(
-            ACCOUNT_CREATE_PROOF_BY_AMOUNT_IDENT.to_string(),
-            FunctionSchema {
-                receiver: Some(Receiver::SelfRef),
-                input: aggregator
-                    .add_child_type_and_descendents::<AccountCreateProofByAmountInput>(),
-                output: aggregator
-                    .add_child_type_and_descendents::<AccountCreateProofByAmountOutput>(),
-                export_name: ACCOUNT_CREATE_PROOF_BY_AMOUNT_IDENT.to_string(),
+            ACCOUNT_CREATE_PROOF_OF_AMOUNT_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref()),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountCreateProofOfAmountInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountCreateProofOfAmountOutput>(),
+                ),
+                export: ACCOUNT_CREATE_PROOF_OF_AMOUNT_IDENT.to_string(),
             },
         );
 
         functions.insert(
-            ACCOUNT_CREATE_PROOF_BY_IDS_IDENT.to_string(),
-            FunctionSchema {
-                receiver: Some(Receiver::SelfRef),
-                input: aggregator.add_child_type_and_descendents::<AccountCreateProofByIdsInput>(),
-                output: aggregator
-                    .add_child_type_and_descendents::<AccountCreateProofByIdsOutput>(),
-                export_name: ACCOUNT_CREATE_PROOF_BY_IDS_IDENT.to_string(),
+            ACCOUNT_CREATE_PROOF_OF_NON_FUNGIBLES_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref()),
+                input: TypeRef::Static(
+                    aggregator
+                        .add_child_type_and_descendents::<AccountCreateProofOfNonFungiblesInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator
+                        .add_child_type_and_descendents::<AccountCreateProofOfNonFungiblesOutput>(),
+                ),
+                export: ACCOUNT_CREATE_PROOF_OF_NON_FUNGIBLES_IDENT.to_string(),
             },
+        );
+
+        functions.insert(
+            ACCOUNT_CHANGE_DEFAULT_DEPOSIT_RULE_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref()),
+                input: TypeRef::Static(
+                    aggregator
+                        .add_child_type_and_descendents::<AccountChangeDefaultDepositRuleInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator
+                        .add_child_type_and_descendents::<AccountChangeDefaultDepositRuleOutput>(),
+                ),
+                export: ACCOUNT_CHANGE_DEFAULT_DEPOSIT_RULE_IDENT.to_string(),
+            },
+        );
+
+        functions.insert(
+            ACCOUNT_CONFIGURE_RESOURCE_DEPOSIT_RULE_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref()),
+                input: TypeRef::Static(aggregator
+                    .add_child_type_and_descendents::<AccountConfigureResourceDepositRuleInput>()),
+                output: TypeRef::Static(aggregator
+                    .add_child_type_and_descendents::<AccountConfigureResourceDepositRuleOutput>()),
+                export: ACCOUNT_CONFIGURE_RESOURCE_DEPOSIT_RULE_IDENT.to_string(),
+            },
+        );
+
+        functions.insert(
+            ACCOUNT_TRY_DEPOSIT_OR_REFUND_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref_mut()),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountTryDepositOrRefundInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountTryDepositOrRefundOutput>(),
+                ),
+                export: ACCOUNT_TRY_DEPOSIT_OR_REFUND_IDENT.to_string(),
+            },
+        );
+
+        functions.insert(
+            ACCOUNT_TRY_DEPOSIT_BATCH_OR_REFUND_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref_mut()),
+                input: TypeRef::Static(
+                    aggregator
+                        .add_child_type_and_descendents::<AccountTryDepositBatchOrRefundInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator
+                        .add_child_type_and_descendents::<AccountTryDepositBatchOrRefundOutput>(),
+                ),
+                export: ACCOUNT_TRY_DEPOSIT_BATCH_OR_REFUND_IDENT.to_string(),
+            },
+        );
+
+        functions.insert(
+            ACCOUNT_TRY_DEPOSIT_OR_ABORT_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref_mut()),
+                input: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountTryDepositOrAbortInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator.add_child_type_and_descendents::<AccountTryDepositOrAbortOutput>(),
+                ),
+                export: ACCOUNT_TRY_DEPOSIT_OR_ABORT_IDENT.to_string(),
+            },
+        );
+
+        functions.insert(
+            ACCOUNT_TRY_DEPOSIT_BATCH_OR_ABORT_IDENT.to_string(),
+            FunctionSchemaInit {
+                receiver: Some(ReceiverInfo::normal_ref_mut()),
+                input: TypeRef::Static(
+                    aggregator
+                        .add_child_type_and_descendents::<AccountTryDepositBatchOrAbortInput>(),
+                ),
+                output: TypeRef::Static(
+                    aggregator
+                        .add_child_type_and_descendents::<AccountTryDepositBatchOrAbortOutput>(),
+                ),
+                export: ACCOUNT_TRY_DEPOSIT_BATCH_OR_ABORT_IDENT.to_string(),
+            },
+        );
+
+        let virtual_lazy_load_functions = btreemap!(
+            ACCOUNT_CREATE_VIRTUAL_SECP256K1_ID => ACCOUNT_CREATE_VIRTUAL_SECP256K1_EXPORT_NAME.to_string(),
+            ACCOUNT_CREATE_VIRTUAL_ED25519_ID => ACCOUNT_CREATE_VIRTUAL_ED25519_EXPORT_NAME.to_string(),
         );
 
         let schema = generate_full_schema(aggregator);
-        PackageSchema {
-            blueprints: btreemap!(
-                ACCOUNT_BLUEPRINT.to_string() => BlueprintSchema {
+        let blueprints = btreemap!(
+            ACCOUNT_BLUEPRINT.to_string() => BlueprintDefinitionInit {
+                blueprint_type: BlueprintType::default(),
+                feature_set: btreeset!(),
+                dependencies: btreeset!(
+                    SECP256K1_SIGNATURE_VIRTUAL_BADGE.into(),
+                    ED25519_SIGNATURE_VIRTUAL_BADGE.into(),
+                    ACCOUNT_OWNER_BADGE.into(),
+                    PACKAGE_OF_DIRECT_CALLER_VIRTUAL_BADGE.into(),
+                ),
+
+                schema: BlueprintSchemaInit {
+                    generics: vec![],
                     schema,
-                    substates,
-                    functions,
-                    event_schema: [].into()
-                }
-            ),
-        }
+                    state: BlueprintStateSchemaInit {
+                        fields,
+                        collections,
+                    },
+                    events: BlueprintEventSchemaInit::default(),
+                    functions: BlueprintFunctionsSchemaInit {
+                        virtual_lazy_load_functions,
+                        functions,
+                    },
+                },
+
+                royalty_config: PackageRoyaltyConfig::default(),
+                auth_config: AuthConfig {
+                    function_auth: FunctionAuth::AllowAll,
+                    method_auth: MethodAuthTemplate::StaticRoles(roles_template!(
+                        roles {
+                            SECURIFY_ROLE => updaters: [SELF_ROLE];
+                        },
+                        methods {
+                            ACCOUNT_SECURIFY_IDENT => [SECURIFY_ROLE];
+
+                            ACCOUNT_CHANGE_DEFAULT_DEPOSIT_RULE_IDENT => [OWNER_ROLE];
+                            ACCOUNT_CONFIGURE_RESOURCE_DEPOSIT_RULE_IDENT => [OWNER_ROLE];
+                            ACCOUNT_WITHDRAW_IDENT => [OWNER_ROLE];
+                            ACCOUNT_WITHDRAW_NON_FUNGIBLES_IDENT => [OWNER_ROLE];
+                            ACCOUNT_LOCK_FEE_IDENT => [OWNER_ROLE];
+                            ACCOUNT_LOCK_CONTINGENT_FEE_IDENT => [OWNER_ROLE];
+                            ACCOUNT_LOCK_FEE_AND_WITHDRAW_IDENT => [OWNER_ROLE];
+                            ACCOUNT_LOCK_FEE_AND_WITHDRAW_NON_FUNGIBLES_IDENT => [OWNER_ROLE];
+                            ACCOUNT_CREATE_PROOF_IDENT => [OWNER_ROLE];
+                            ACCOUNT_CREATE_PROOF_OF_AMOUNT_IDENT => [OWNER_ROLE];
+                            ACCOUNT_CREATE_PROOF_OF_NON_FUNGIBLES_IDENT => [OWNER_ROLE];
+                            ACCOUNT_DEPOSIT_IDENT => [OWNER_ROLE];
+                            ACCOUNT_DEPOSIT_BATCH_IDENT => [OWNER_ROLE];
+                            ACCOUNT_BURN_IDENT => [OWNER_ROLE];
+                            ACCOUNT_BURN_NON_FUNGIBLES_IDENT => [OWNER_ROLE];
+
+                            ACCOUNT_TRY_DEPOSIT_OR_REFUND_IDENT => MethodAccessibility::Public;
+                            ACCOUNT_TRY_DEPOSIT_BATCH_OR_REFUND_IDENT => MethodAccessibility::Public;
+                            ACCOUNT_TRY_DEPOSIT_OR_ABORT_IDENT => MethodAccessibility::Public;
+                            ACCOUNT_TRY_DEPOSIT_BATCH_OR_ABORT_IDENT => MethodAccessibility::Public;
+                        }
+                    )),
+                },
+            }
+        );
+
+        PackageDefinition { blueprints }
     }
 
     pub fn invoke_export<Y>(
         export_name: &str,
-        receiver: Option<RENodeId>,
-        input: IndexedScryptoValue,
+        input: &IndexedScryptoValue,
         api: &mut Y,
     ) -> Result<IndexedScryptoValue, RuntimeError>
     where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
+        Y: ClientApi<RuntimeError>,
     {
         match export_name {
-            ACCOUNT_CREATE_GLOBAL_IDENT => {
-                api.consume_cost_units(FIXED_LOW_FEE, ClientCostingReason::RunNative)?;
+            ACCOUNT_CREATE_VIRTUAL_SECP256K1_EXPORT_NAME => {
+                let input: VirtualLazyLoadInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
 
-                if receiver.is_some() {
-                    return Err(RuntimeError::InterpreterError(
-                        InterpreterError::NativeUnexpectedReceiver(export_name.to_string()),
-                    ));
-                }
-                Self::create_global(input, api)
+                let rtn = AccountBlueprint::create_virtual_secp256k1(input, api)?;
+
+                Ok(IndexedScryptoValue::from_typed(&rtn))
             }
-            ACCOUNT_CREATE_LOCAL_IDENT => {
-                api.consume_cost_units(FIXED_LOW_FEE, ClientCostingReason::RunNative)?;
+            ACCOUNT_CREATE_VIRTUAL_ED25519_EXPORT_NAME => {
+                let input: VirtualLazyLoadInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+                let rtn = AccountBlueprint::create_virtual_ed25519(input, api)?;
 
-                if receiver.is_some() {
-                    return Err(RuntimeError::InterpreterError(
-                        InterpreterError::NativeUnexpectedReceiver(export_name.to_string()),
-                    ));
-                }
-                Self::create_local(input, api)
+                Ok(IndexedScryptoValue::from_typed(&rtn))
+            }
+            ACCOUNT_CREATE_ADVANCED_IDENT => {
+                let input: AccountCreateAdvancedInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+
+                let rtn = AccountBlueprint::create_advanced(input.owner_role, api)?;
+
+                Ok(IndexedScryptoValue::from_typed(&rtn))
+            }
+            ACCOUNT_CREATE_IDENT => {
+                let _input: AccountCreateInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+
+                let rtn = AccountBlueprint::create(api)?;
+
+                Ok(IndexedScryptoValue::from_typed(&rtn))
+            }
+            ACCOUNT_SECURIFY_IDENT => {
+                let receiver = Runtime::get_node_id(api)?;
+                let _input: AccountSecurifyInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+                let rtn = AccountBlueprint::securify(&receiver, api)?;
+
+                Ok(IndexedScryptoValue::from_typed(&rtn))
             }
             ACCOUNT_LOCK_FEE_IDENT => {
-                api.consume_cost_units(FIXED_LOW_FEE, ClientCostingReason::RunNative)?;
-
-                let receiver = receiver.ok_or(RuntimeError::InterpreterError(
-                    InterpreterError::NativeExpectedReceiver(export_name.to_string()),
-                ))?;
-                Self::lock_fee(receiver, input, api)
+                let input: AccountLockFeeInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+                let rtn = AccountBlueprint::lock_fee(input.amount, api)?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
             }
             ACCOUNT_LOCK_CONTINGENT_FEE_IDENT => {
-                api.consume_cost_units(FIXED_LOW_FEE, ClientCostingReason::RunNative)?;
+                let input: AccountLockContingentFeeInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
 
-                let receiver = receiver.ok_or(RuntimeError::InterpreterError(
-                    InterpreterError::NativeExpectedReceiver(export_name.to_string()),
-                ))?;
-                Self::lock_contingent_fee(receiver, input, api)
+                let rtn = AccountBlueprint::lock_contingent_fee(input.amount, api)?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
             }
             ACCOUNT_DEPOSIT_IDENT => {
-                api.consume_cost_units(FIXED_LOW_FEE, ClientCostingReason::RunNative)?;
+                let input: AccountDepositInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
 
-                let receiver = receiver.ok_or(RuntimeError::InterpreterError(
-                    InterpreterError::NativeExpectedReceiver(export_name.to_string()),
-                ))?;
-                Self::deposit(receiver, input, api)
+                let rtn = AccountBlueprint::deposit(input.bucket, api)?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
             }
             ACCOUNT_DEPOSIT_BATCH_IDENT => {
-                api.consume_cost_units(FIXED_LOW_FEE, ClientCostingReason::RunNative)?;
+                let input: AccountDepositBatchInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
 
-                let receiver = receiver.ok_or(RuntimeError::InterpreterError(
-                    InterpreterError::NativeExpectedReceiver(export_name.to_string()),
-                ))?;
-                Self::deposit_batch(receiver, input, api)
+                let rtn = AccountBlueprint::deposit_batch(input.buckets, api)?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
+            }
+            ACCOUNT_TRY_DEPOSIT_OR_REFUND_IDENT => {
+                let input: AccountTryDepositOrRefundInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+
+                let rtn = AccountBlueprint::try_deposit_or_refund(input.bucket, api)?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
+            }
+            ACCOUNT_TRY_DEPOSIT_BATCH_OR_REFUND_IDENT => {
+                let input: AccountTryDepositBatchOrRefundInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+
+                let rtn = AccountBlueprint::try_deposit_batch_or_refund(input.buckets, api)?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
+            }
+            ACCOUNT_TRY_DEPOSIT_OR_ABORT_IDENT => {
+                let input: AccountTryDepositOrAbortInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+
+                let rtn = AccountBlueprint::try_deposit_or_abort(input.bucket, api)?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
+            }
+            ACCOUNT_TRY_DEPOSIT_BATCH_OR_ABORT_IDENT => {
+                let input: AccountTryDepositBatchOrAbortInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+
+                let rtn = AccountBlueprint::try_deposit_batch_or_abort(input.buckets, api)?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
             }
             ACCOUNT_WITHDRAW_IDENT => {
-                api.consume_cost_units(FIXED_LOW_FEE, ClientCostingReason::RunNative)?;
+                let input: AccountWithdrawInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
 
-                let receiver = receiver.ok_or(RuntimeError::InterpreterError(
-                    InterpreterError::NativeExpectedReceiver(export_name.to_string()),
-                ))?;
-                Self::withdraw(receiver, input, api)
+                let rtn = AccountBlueprint::withdraw(input.resource_address, input.amount, api)?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
             }
             ACCOUNT_WITHDRAW_NON_FUNGIBLES_IDENT => {
-                api.consume_cost_units(FIXED_LOW_FEE, ClientCostingReason::RunNative)?;
+                let input: AccountWithdrawNonFungiblesInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+                let rtn = AccountBlueprint::withdraw_non_fungibles(
+                    input.resource_address,
+                    input.ids,
+                    api,
+                )?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
+            }
+            ACCOUNT_BURN_IDENT => {
+                let input: AccountBurnInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
 
-                let receiver = receiver.ok_or(RuntimeError::InterpreterError(
-                    InterpreterError::NativeExpectedReceiver(export_name.to_string()),
-                ))?;
-                Self::withdraw_non_fungibles(receiver, input, api)
+                let rtn = AccountBlueprint::burn(input.resource_address, input.amount, api)?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
+            }
+            ACCOUNT_BURN_NON_FUNGIBLES_IDENT => {
+                let input: AccountBurnNonFungiblesInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+                let rtn =
+                    AccountBlueprint::burn_non_fungibles(input.resource_address, input.ids, api)?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
             }
             ACCOUNT_LOCK_FEE_AND_WITHDRAW_IDENT => {
-                api.consume_cost_units(FIXED_LOW_FEE, ClientCostingReason::RunNative)?;
-
-                let receiver = receiver.ok_or(RuntimeError::InterpreterError(
-                    InterpreterError::NativeExpectedReceiver(export_name.to_string()),
-                ))?;
-                Self::lock_fee_and_withdraw(receiver, input, api)
+                let input: AccountLockFeeAndWithdrawInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+                let rtn = AccountBlueprint::lock_fee_and_withdraw(
+                    input.amount_to_lock,
+                    input.resource_address,
+                    input.amount,
+                    api,
+                )?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
             }
             ACCOUNT_LOCK_FEE_AND_WITHDRAW_NON_FUNGIBLES_IDENT => {
-                api.consume_cost_units(FIXED_LOW_FEE, ClientCostingReason::RunNative)?;
-
-                let receiver = receiver.ok_or(RuntimeError::InterpreterError(
-                    InterpreterError::NativeExpectedReceiver(export_name.to_string()),
-                ))?;
-                Self::lock_fee_and_withdraw_non_fungibles(receiver, input, api)
+                let input: AccountLockFeeAndWithdrawNonFungiblesInput =
+                    input.as_typed().map_err(|e| {
+                        RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                    })?;
+                let rtn = AccountBlueprint::lock_fee_and_withdraw_non_fungibles(
+                    input.amount_to_lock,
+                    input.resource_address,
+                    input.ids,
+                    api,
+                )?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
             }
             ACCOUNT_CREATE_PROOF_IDENT => {
-                api.consume_cost_units(FIXED_LOW_FEE, ClientCostingReason::RunNative)?;
-
-                let receiver = receiver.ok_or(RuntimeError::InterpreterError(
-                    InterpreterError::NativeExpectedReceiver(export_name.to_string()),
-                ))?;
-                Self::create_proof(receiver, input, api)
+                let input: AccountCreateProofInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+                let rtn = AccountBlueprint::create_proof(input.resource_address, api)?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
             }
-            ACCOUNT_CREATE_PROOF_BY_AMOUNT_IDENT => {
-                api.consume_cost_units(FIXED_LOW_FEE, ClientCostingReason::RunNative)?;
-
-                let receiver = receiver.ok_or(RuntimeError::InterpreterError(
-                    InterpreterError::NativeExpectedReceiver(export_name.to_string()),
-                ))?;
-                Self::create_proof_by_amount(receiver, input, api)
+            ACCOUNT_CREATE_PROOF_OF_AMOUNT_IDENT => {
+                let input: AccountCreateProofOfAmountInput = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+                let rtn = AccountBlueprint::create_proof_of_amount(
+                    input.resource_address,
+                    input.amount,
+                    api,
+                )?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
             }
-            ACCOUNT_CREATE_PROOF_BY_IDS_IDENT => {
-                api.consume_cost_units(FIXED_LOW_FEE, ClientCostingReason::RunNative)?;
-
-                let receiver = receiver.ok_or(RuntimeError::InterpreterError(
-                    InterpreterError::NativeExpectedReceiver(export_name.to_string()),
-                ))?;
-                Self::create_proof_by_ids(receiver, input, api)
+            ACCOUNT_CREATE_PROOF_OF_NON_FUNGIBLES_IDENT => {
+                let input: AccountCreateProofOfNonFungiblesInput =
+                    input.as_typed().map_err(|e| {
+                        RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                    })?;
+                let rtn = AccountBlueprint::create_proof_of_non_fungibles(
+                    input.resource_address,
+                    input.ids,
+                    api,
+                )?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
             }
-            _ => Err(RuntimeError::InterpreterError(
-                InterpreterError::NativeExportDoesNotExist(export_name.to_string()),
+            ACCOUNT_CHANGE_DEFAULT_DEPOSIT_RULE_IDENT => {
+                let AccountChangeDefaultDepositRuleInput {
+                    default_deposit_rule,
+                } = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+                let rtn = AccountBlueprint::change_account_default_deposit_rule(
+                    default_deposit_rule,
+                    api,
+                )?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
+            }
+            ACCOUNT_CONFIGURE_RESOURCE_DEPOSIT_RULE_IDENT => {
+                let AccountConfigureResourceDepositRuleInput {
+                    resource_address,
+                    resource_deposit_configuration,
+                } = input.as_typed().map_err(|e| {
+                    RuntimeError::ApplicationError(ApplicationError::InputDecodeError(e))
+                })?;
+                let rtn = AccountBlueprint::configure_resource_deposit_rule(
+                    resource_address,
+                    resource_deposit_configuration,
+                    api,
+                )?;
+                Ok(IndexedScryptoValue::from_typed(&rtn))
+            }
+            _ => Err(RuntimeError::ApplicationError(
+                ApplicationError::ExportDoesNotExist(export_name.to_string()),
             )),
         }
     }
-
-    fn create_global<Y>(
-        input: IndexedScryptoValue,
-        api: &mut Y,
-    ) -> Result<IndexedScryptoValue, RuntimeError>
-    where
-        Y: KernelNodeApi + ClientApi<RuntimeError>,
-    {
-        let input: AccountCreateGlobalInput = input.as_typed().map_err(|e| {
-            RuntimeError::InterpreterError(InterpreterError::ScryptoInputDecodeError(e))
-        })?;
-
-        // Creating the key-value-store where the vaults will be held. This is a KVStore of
-        // [`ResourceAddress`] and [`Own`]ed vaults.
-        let kv_store_id = {
-            let node_id = api.kernel_allocate_node_id(AllocateEntityType::KeyValueStore)?;
-            let node = RENodeInit::KeyValueStore;
-            api.kernel_create_node(
-                node_id,
-                node,
-                btreemap!(
-                    NodeModuleId::TypeInfo => RENodeModuleInit::TypeInfo(TypeInfoSubstate::KeyValueStore(
-                        KeyValueStoreSchema::new::<ResourceAddress, Own>(false))
-                    )
-                ),
-            )?;
-            node_id
-        };
-
-        let account_id = {
-            let account_substate = AccountSubstate {
-                vaults: Own::KeyValueStore(kv_store_id.into()),
-            };
-            api.new_object(
-                ACCOUNT_BLUEPRINT,
-                vec![scrypto_encode(&account_substate).unwrap()],
-            )?
-        };
-
-        // Creating [`AccessRules`] from the passed withdraw access rule.
-        let access_rules =
-            AccessRulesObject::sys_new(access_rules_from_withdraw_rule(input.withdraw_rule), api)?;
-        let metadata = Metadata::sys_create(api)?;
-        let royalty = ComponentRoyalty::sys_create(RoyaltyConfig::default(), api)?;
-
-        let address = api.globalize(
-            RENodeId::Object(account_id),
-            btreemap!(
-                NodeModuleId::AccessRules => access_rules.id(),
-                NodeModuleId::Metadata => metadata.id(),
-                NodeModuleId::ComponentRoyalty => royalty.id(),
-            ),
-        )?;
-
-        Ok(IndexedScryptoValue::from_typed(&address))
-    }
-
-    fn create_local<Y>(
-        input: IndexedScryptoValue,
-        api: &mut Y,
-    ) -> Result<IndexedScryptoValue, RuntimeError>
-    where
-        Y: KernelNodeApi + ClientApi<RuntimeError>,
-    {
-        let _input: AccountCreateLocalInput = input.as_typed().map_err(|e| {
-            RuntimeError::InterpreterError(InterpreterError::ScryptoInputDecodeError(e))
-        })?;
-
-        // Creating the key-value-store where the vaults will be held. This is a KVStore of
-        // [`ResourceAddress`] and [`Own`]ed vaults.
-        let kv_store_id = {
-            let node_id = api.kernel_allocate_node_id(AllocateEntityType::KeyValueStore)?;
-            let node = RENodeInit::KeyValueStore;
-            api.kernel_create_node(
-                node_id,
-                node,
-                btreemap!(
-                    NodeModuleId::TypeInfo => RENodeModuleInit::TypeInfo(TypeInfoSubstate::KeyValueStore(
-                        KeyValueStoreSchema::new::<ResourceAddress, Own>(false))
-                    )
-                ),
-            )?;
-            node_id
-        };
-
-        let account_id = {
-            let account_substate = AccountSubstate {
-                vaults: Own::KeyValueStore(kv_store_id.into()),
-            };
-            api.new_object(
-                ACCOUNT_BLUEPRINT,
-                vec![scrypto_encode(&account_substate).unwrap()],
-            )?
-        };
-
-        Ok(IndexedScryptoValue::from_typed(&Own::Object(account_id)))
-    }
-
-    fn lock_fee_internal<Y>(
-        receiver: RENodeId,
-        amount: Decimal,
-        contingent: bool,
-        api: &mut Y,
-    ) -> Result<(), RuntimeError>
-    where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
-    {
-        let resource_address = RADIX_TOKEN;
-        let encoded_key = scrypto_encode(&resource_address).expect("Impossible Case!");
-
-        let handle = api.sys_lock_substate(
-            receiver,
-            SubstateOffset::Account(AccountOffset::Account),
-            LockFlags::read_only(),
-        )?; // TODO: should this be an R or RW lock?
-
-        // Getting a read-only lock handle on the KVStore ENTRY
-        let kv_store_entry_lock_handle = {
-            let account: &AccountSubstate = api.kernel_get_substate_ref(handle)?;
-            let kv_store_id = account.vaults.key_value_store_id();
-
-            let node_id = RENodeId::KeyValueStore(kv_store_id);
-            let offset = SubstateOffset::KeyValueStore(KeyValueStoreOffset::Entry(encoded_key));
-            let handle = api.sys_lock_substate(node_id, offset, LockFlags::read_only())?;
-            handle
-        };
-
-        // Get the vault stored in the KeyValueStore entry - if it doesn't exist, then error out.
-        let mut vault = {
-            let entry: &Option<ScryptoValue> =
-                api.kernel_get_substate_ref(kv_store_entry_lock_handle)?;
-
-            match entry {
-                Option::Some(value) => Ok(scrypto_decode::<Own>(&scrypto_encode(value).unwrap())
-                    .map(|own| Vault(own.vault_id()))
-                    .expect("Impossible Case!")),
-                Option::None => Err(AccountError::VaultDoesNotExist { resource_address }),
-            }
-        }?;
-
-        // Lock fee against the vault
-        if !contingent {
-            vault.sys_lock_fee(api, amount)?;
-        } else {
-            vault.sys_lock_contingent_fee(api, amount)?;
-        }
-
-        // Drop locks (LIFO)
-        api.sys_drop_lock(kv_store_entry_lock_handle)?;
-        api.sys_drop_lock(handle)?;
-
-        Ok(())
-    }
-
-    fn lock_fee<Y>(
-        receiver: RENodeId,
-        input: IndexedScryptoValue,
-        api: &mut Y,
-    ) -> Result<IndexedScryptoValue, RuntimeError>
-    where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
-    {
-        let input: AccountLockFeeInput = input.as_typed().map_err(|e| {
-            RuntimeError::InterpreterError(InterpreterError::ScryptoInputDecodeError(e))
-        })?;
-
-        Self::lock_fee_internal(receiver, input.amount, false, api)?;
-
-        Ok(IndexedScryptoValue::from_typed(&()))
-    }
-
-    fn lock_contingent_fee<Y>(
-        receiver: RENodeId,
-        input: IndexedScryptoValue,
-        api: &mut Y,
-    ) -> Result<IndexedScryptoValue, RuntimeError>
-    where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
-    {
-        let input: AccountLockContingentFeeInput = input.as_typed().map_err(|e| {
-            RuntimeError::InterpreterError(InterpreterError::ScryptoInputDecodeError(e))
-        })?;
-
-        Self::lock_fee_internal(receiver, input.amount, true, api)?;
-
-        Ok(IndexedScryptoValue::from_typed(&()))
-    }
-
-    fn deposit<Y>(
-        receiver: RENodeId,
-        input: IndexedScryptoValue,
-        api: &mut Y,
-    ) -> Result<IndexedScryptoValue, RuntimeError>
-    where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
-    {
-        let input: AccountDepositInput = input.as_typed().map_err(|e| {
-            RuntimeError::InterpreterError(InterpreterError::ScryptoInputDecodeError(e))
-        })?;
-
-        let resource_address = input.bucket.sys_resource_address(api)?;
-        let encoded_key = scrypto_encode(&resource_address).expect("Impossible Case!");
-
-        let handle = api.sys_lock_substate(
-            receiver,
-            SubstateOffset::Account(AccountOffset::Account),
-            LockFlags::read_only(),
-        )?;
-
-        // Getting an RW lock handle on the KVStore ENTRY
-        let kv_store_entry_lock_handle = {
-            let account: &AccountSubstate = api.kernel_get_substate_ref(handle)?;
-            let kv_store_id = account.vaults.key_value_store_id();
-
-            let node_id = RENodeId::KeyValueStore(kv_store_id);
-            let offset = SubstateOffset::KeyValueStore(KeyValueStoreOffset::Entry(encoded_key));
-            let handle = api.sys_lock_substate(node_id, offset, LockFlags::MUTABLE)?;
-            handle
-        };
-
-        // Get the vault stored in the KeyValueStore entry - if it doesn't exist, then create it and
-        // insert it's entry into the KVStore
-        let mut vault = {
-            let entry: &Option<ScryptoValue> =
-                api.kernel_get_substate_ref(kv_store_entry_lock_handle)?;
-
-            match entry {
-                Option::Some(value) => scrypto_decode::<Own>(&scrypto_encode(value).unwrap())
-                    .map(|own| Vault(own.vault_id()))
-                    .expect("Impossible Case!"),
-                Option::None => {
-                    let vault = Vault::sys_new(resource_address, api)?;
-                    let encoded_value = IndexedScryptoValue::from_typed(&Own::Vault(vault.0));
-
-                    let entry: &mut Option<ScryptoValue> =
-                        api.kernel_get_substate_ref_mut(kv_store_entry_lock_handle)?;
-                    *entry = Option::Some(encoded_value.to_scrypto_value());
-                    vault
-                }
-            }
-        };
-
-        // Put the bucket in the vault
-        vault.sys_put(input.bucket, api)?;
-
-        // Drop locks (LIFO)
-        api.sys_drop_lock(kv_store_entry_lock_handle)?;
-        api.sys_drop_lock(handle)?;
-
-        Ok(IndexedScryptoValue::from_typed(&()))
-    }
-
-    fn deposit_batch<Y>(
-        receiver: RENodeId,
-        input: IndexedScryptoValue,
-        api: &mut Y,
-    ) -> Result<IndexedScryptoValue, RuntimeError>
-    where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
-    {
-        let input: AccountDepositBatchInput = input.as_typed().map_err(|e| {
-            RuntimeError::InterpreterError(InterpreterError::ScryptoInputDecodeError(e))
-        })?;
-
-        let handle = api.sys_lock_substate(
-            receiver,
-            SubstateOffset::Account(AccountOffset::Account),
-            LockFlags::read_only(),
-        )?; // TODO: should this be an R or RW lock?
-
-        // TODO: We should optimize this a bit more so that we're not locking and unlocking the same
-        // KV-store entries again and again because of buckets that have the same resource address.
-        // Perhaps these should be grouped into a HashMap<ResourceAddress, Vec<Bucket>> when being
-        // resolved.
-        for bucket in input.buckets {
-            let resource_address = bucket.sys_resource_address(api)?;
-            let encoded_key = scrypto_encode(&resource_address).expect("Impossible Case!");
-
-            // Getting an RW lock handle on the KVStore ENTRY
-            let kv_store_entry_lock_handle = {
-                let account: &AccountSubstate = api.kernel_get_substate_ref(handle)?;
-                let kv_store_id = account.vaults.key_value_store_id();
-
-                let node_id = RENodeId::KeyValueStore(kv_store_id);
-                let offset = SubstateOffset::KeyValueStore(KeyValueStoreOffset::Entry(encoded_key));
-                let handle = api.sys_lock_substate(node_id, offset, LockFlags::MUTABLE)?;
-                handle
-            };
-
-            // Get the vault stored in the KeyValueStore entry - if it doesn't exist, then create it
-            // and insert it's entry into the KVStore
-            let mut vault = {
-                let entry: &Option<ScryptoValue> =
-                    api.kernel_get_substate_ref(kv_store_entry_lock_handle)?;
-
-                match entry {
-                    Option::Some(value) => scrypto_decode::<Own>(&scrypto_encode(value).unwrap())
-                        .map(|own| Vault(own.vault_id()))
-                        .expect("Impossible Case!"),
-                    Option::None => {
-                        let vault = Vault::sys_new(resource_address, api)?;
-                        let encoded_value = IndexedScryptoValue::from_typed(&Own::Vault(vault.0));
-
-                        let entry: &mut Option<ScryptoValue> =
-                            api.kernel_get_substate_ref_mut(kv_store_entry_lock_handle)?;
-                        *entry = Option::Some(encoded_value.to_scrypto_value());
-                        vault
-                    }
-                }
-            };
-
-            // Put the bucket in the vault
-            vault.sys_put(bucket, api)?;
-
-            api.sys_drop_lock(kv_store_entry_lock_handle)?;
-        }
-
-        api.sys_drop_lock(handle)?;
-
-        Ok(IndexedScryptoValue::from_typed(&()))
-    }
-
-    fn get_vault<F, Y, R>(
-        receiver: RENodeId,
-        resource_address: ResourceAddress,
-        vault_fn: F,
-        api: &mut Y,
-    ) -> Result<R, RuntimeError>
-    where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
-        F: FnOnce(&mut Vault, &mut Y) -> Result<R, RuntimeError>,
-    {
-        let encoded_key = scrypto_encode(&resource_address).expect("Impossible Case!");
-
-        let handle = api.sys_lock_substate(
-            receiver,
-            SubstateOffset::Account(AccountOffset::Account),
-            LockFlags::read_only(),
-        )?; // TODO: should this be an R or RW lock?
-
-        // Getting a read-only lock handle on the KVStore ENTRY
-        let kv_store_entry_lock_handle = {
-            let account: &AccountSubstate = api.kernel_get_substate_ref(handle)?;
-            let kv_store_id = account.vaults.key_value_store_id();
-
-            let node_id = RENodeId::KeyValueStore(kv_store_id);
-            let offset = SubstateOffset::KeyValueStore(KeyValueStoreOffset::Entry(encoded_key));
-            let handle = api.sys_lock_substate(node_id, offset, LockFlags::read_only())?;
-            handle
-        };
-
-        // Get the vault stored in the KeyValueStore entry - if it doesn't exist, then error out.
-        let mut vault = {
-            let entry: &Option<ScryptoValue> =
-                api.kernel_get_substate_ref(kv_store_entry_lock_handle)?;
-
-            match entry {
-                Option::Some(value) => Ok(scrypto_decode::<Own>(&scrypto_encode(value).unwrap())
-                    .map(|own| Vault(own.vault_id()))
-                    .expect("Impossible Case!")),
-                Option::None => Err(AccountError::VaultDoesNotExist { resource_address }),
-            }
-        }?;
-
-        // Withdraw to bucket
-        let rtn = vault_fn(&mut vault, api)?;
-
-        // Drop locks (LIFO)
-        api.sys_drop_lock(kv_store_entry_lock_handle)?;
-        api.sys_drop_lock(handle)?;
-
-        Ok(rtn)
-    }
-
-    fn withdraw<Y>(
-        receiver: RENodeId,
-        input: IndexedScryptoValue,
-        api: &mut Y,
-    ) -> Result<IndexedScryptoValue, RuntimeError>
-    where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
-    {
-        let input: AccountWithdrawInput = input.as_typed().map_err(|e| {
-            RuntimeError::InterpreterError(InterpreterError::ScryptoInputDecodeError(e))
-        })?;
-
-        let bucket = Self::get_vault(
-            receiver,
-            input.resource_address,
-            |vault, api| vault.sys_take(input.amount, api),
-            api,
-        )?;
-
-        Ok(IndexedScryptoValue::from_typed(&bucket))
-    }
-
-    fn withdraw_non_fungibles<Y>(
-        receiver: RENodeId,
-        input: IndexedScryptoValue,
-        api: &mut Y,
-    ) -> Result<IndexedScryptoValue, RuntimeError>
-    where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
-    {
-        let input: AccountWithdrawNonFungiblesInput = input.as_typed().map_err(|e| {
-            RuntimeError::InterpreterError(InterpreterError::ScryptoInputDecodeError(e))
-        })?;
-
-        let bucket = Self::get_vault(
-            receiver,
-            input.resource_address,
-            |vault, api| vault.sys_take_non_fungibles(input.ids, api),
-            api,
-        )?;
-
-        Ok(IndexedScryptoValue::from_typed(&bucket))
-    }
-
-    fn lock_fee_and_withdraw<Y>(
-        receiver: RENodeId,
-        input: IndexedScryptoValue,
-        api: &mut Y,
-    ) -> Result<IndexedScryptoValue, RuntimeError>
-    where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
-    {
-        let input: AccountLockFeeAndWithdrawInput = input.as_typed().map_err(|e| {
-            RuntimeError::InterpreterError(InterpreterError::ScryptoInputDecodeError(e))
-        })?;
-
-        Self::lock_fee_internal(receiver, input.amount_to_lock, false, api)?;
-
-        let bucket = Self::get_vault(
-            receiver,
-            input.resource_address,
-            |vault, api| vault.sys_take(input.amount, api),
-            api,
-        )?;
-
-        Ok(IndexedScryptoValue::from_typed(&bucket))
-    }
-
-    fn lock_fee_and_withdraw_non_fungibles<Y>(
-        receiver: RENodeId,
-        input: IndexedScryptoValue,
-        api: &mut Y,
-    ) -> Result<IndexedScryptoValue, RuntimeError>
-    where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
-    {
-        let input: AccountLockFeeAndWithdrawNonFungiblesInput = input.as_typed().map_err(|e| {
-            RuntimeError::InterpreterError(InterpreterError::ScryptoInputDecodeError(e))
-        })?;
-
-        Self::lock_fee_internal(receiver, input.amount_to_lock, false, api)?;
-
-        let bucket = Self::get_vault(
-            receiver,
-            input.resource_address,
-            |vault, api| vault.sys_take_non_fungibles(input.ids, api),
-            api,
-        )?;
-
-        Ok(IndexedScryptoValue::from_typed(&bucket))
-    }
-
-    fn create_proof<Y>(
-        receiver: RENodeId,
-        input: IndexedScryptoValue,
-        api: &mut Y,
-    ) -> Result<IndexedScryptoValue, RuntimeError>
-    where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
-    {
-        let input: AccountCreateProofInput = input.as_typed().map_err(|e| {
-            RuntimeError::InterpreterError(InterpreterError::ScryptoInputDecodeError(e))
-        })?;
-
-        let proof = Self::get_vault(
-            receiver,
-            input.resource_address,
-            |vault, api| vault.sys_create_proof(api),
-            api,
-        )?;
-
-        Ok(IndexedScryptoValue::from_typed(&proof))
-    }
-
-    fn create_proof_by_amount<Y>(
-        receiver: RENodeId,
-        input: IndexedScryptoValue,
-        api: &mut Y,
-    ) -> Result<IndexedScryptoValue, RuntimeError>
-    where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
-    {
-        let input: AccountCreateProofByAmountInput = input.as_typed().map_err(|e| {
-            RuntimeError::InterpreterError(InterpreterError::ScryptoInputDecodeError(e))
-        })?;
-
-        let proof = Self::get_vault(
-            receiver,
-            input.resource_address,
-            |vault, api| vault.sys_create_proof_by_amount(input.amount, api),
-            api,
-        )?;
-
-        Ok(IndexedScryptoValue::from_typed(&proof))
-    }
-
-    fn create_proof_by_ids<Y>(
-        receiver: RENodeId,
-        input: IndexedScryptoValue,
-        api: &mut Y,
-    ) -> Result<IndexedScryptoValue, RuntimeError>
-    where
-        Y: KernelNodeApi + KernelSubstateApi + ClientApi<RuntimeError>,
-    {
-        let input: AccountCreateProofByIdsInput = input.as_typed().map_err(|e| {
-            RuntimeError::InterpreterError(InterpreterError::ScryptoInputDecodeError(e))
-        })?;
-
-        let proof = Self::get_vault(
-            receiver,
-            input.resource_address,
-            |vault, api| vault.sys_create_proof_by_ids(input.ids, api),
-            api,
-        )?;
-
-        Ok(IndexedScryptoValue::from_typed(&proof))
-    }
-}
-
-//=========
-// Helpers
-//=========
-
-fn access_rules_from_withdraw_rule(withdraw_rule: AccessRule) -> AccessRulesConfig {
-    let mut access_rules = AccessRulesConfig::new();
-    access_rules.set_access_rule_and_mutability(
-        MethodKey::new(NodeModuleId::SELF, ACCOUNT_DEPOSIT_IDENT.to_string()),
-        AccessRule::AllowAll,
-        AccessRule::DenyAll,
-    );
-    access_rules.set_access_rule_and_mutability(
-        MethodKey::new(NodeModuleId::SELF, ACCOUNT_DEPOSIT_BATCH_IDENT.to_string()),
-        AccessRule::AllowAll,
-        AccessRule::DenyAll,
-    );
-    access_rules.default(withdraw_rule.clone(), withdraw_rule)
 }
