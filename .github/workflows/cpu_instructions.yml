@@ -12,10 +12,12 @@ jobs:
     name: Run CPU instruction
     runs-on: ubuntu-22.04
     steps:
-      - name: Download QEMU v8.0.3
+      - name: Setup dependencies
+        run: apt-get install build-essential pkg-config ninja-build libglib2.0-dev meson
+      - name: Setup QEMU v8.0.3
         run: |
              wget https://download.qemu.org/qemu-8.0.3.tar.xz
-             tar xvJf qemu-8.0.3.tar.xz
+             tar xJf qemu-8.0.3.tar.xz
              cd qemu-8.0.3
              ./configure
              make
