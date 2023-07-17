@@ -19,7 +19,7 @@ jobs:
       - name: Setup dependencies
         run: |
              sudo apt-get update
-             sudo apt-get install build-essential pkg-config ninja-build libglib2.0-dev meson qemu-client
+             sudo apt-get install build-essential pkg-config ninja-build libglib2.0-dev meson qemu-user
              qemu-x86_64 --version
              qemu-x86_64 --help
       - name: Setup QEMU v8.0.3
