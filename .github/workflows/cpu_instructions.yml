@@ -13,12 +13,14 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Setup dependencies
-        run: sudo apt-get install build-essential pkg-config ninja-build libglib2.0-dev meson
+        run: |
+             sudo apt-get update
+             sudo apt-get install build-essential pkg-config ninja-build libglib2.0-dev meson
       - name: Setup QEMU v8.0.3
         run: |
              wget https://download.qemu.org/qemu-8.0.3.tar.xz
              tar xJf qemu-8.0.3.tar.xz
              cd qemu-8.0.3
-             ./configure
+             ./configure --target-list=x86_64-softmmu --enable-plugins
              make
           
