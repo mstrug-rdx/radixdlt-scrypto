@@ -1,5 +1,5 @@
 name: CPU instructions
-run-name: CPU instructions, branch: ${{ github.ref_name }}
+run-name: CPU instructions, branch = ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
