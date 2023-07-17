@@ -12,6 +12,10 @@ jobs:
     name: Run CPU instruction
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
       - name: Setup dependencies
         run: |
              sudo apt-get update
@@ -22,5 +26,13 @@ jobs:
              tar xJf qemu-8.0.3.tar.xz
              cd qemu-8.0.3
              ./configure --target-list=x86_64-softmmu --enable-plugins
-             make
+             #make
+             pwd
+             cd ..
+      - name: Compile QEMU plugin
+        run: |
+             pwd
+             cd radixdlt-scrypto/radix-engine-profiling/qemu-plugin
+             bash ./build.sh
+             
           
