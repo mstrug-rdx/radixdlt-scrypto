@@ -28,7 +28,7 @@ jobs:
              tar xJf qemu-8.0.3.tar.xz
              cd qemu-8.0.3
              ./configure --disable-system --enable-user --target-list=x86_64-linux-user --enable-plugins
-             #make
+             make
              pwd
              cd ..
       - name: Compile Scrypto QEMU plugin
