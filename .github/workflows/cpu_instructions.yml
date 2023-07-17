@@ -47,6 +47,9 @@ jobs:
         run: |
              cargo test --release --no-run --features resource_tracker --workspace --exclude radix-engine-common
              rm ./target/release/deps/transaction_multi_threaded-*
-             
-
-          
+      - name: Run tests using QEMU
+        run: bash ./radix-engine-profiling/resources-tracker-macro/scripts/run_tests.sh ./target/release/deps/
+      - name: Table summary
+        run: bash cat /tmp/scrypto-resources-usage/_out_table.txt
+      - name: Native blueprints CSV
+        run: bash cat /tmp/native_function_base_costs.csv
