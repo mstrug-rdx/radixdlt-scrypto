@@ -19,14 +19,16 @@ jobs:
       - name: Setup dependencies
         run: |
              sudo apt-get update
-             sudo apt-get install build-essential pkg-config ninja-build libglib2.0-dev meson
+             sudo apt-get install build-essential pkg-config ninja-build libglib2.0-dev meson qemu-client
+             qemu-x86_64 --version
+             qemu-x86_64 --help
       - name: Setup QEMU v8.0.3
         run: |
              cd ..
              wget -nv https://download.qemu.org/qemu-8.0.3.tar.xz
              tar xJf qemu-8.0.3.tar.xz
              cd qemu-8.0.3
-             ./configure --target-list=x86_64-softmmu --enable-plugins
+             ./configure  --disable-system --enable-user --target-list=x86_64-linux-user --enable-plugins
              #make
              pwd
              cd ..
