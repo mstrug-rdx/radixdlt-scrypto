@@ -55,7 +55,7 @@ jobs:
       - name: Upload XML files
         run: |
              tar -zcf /tmp/xml_files.tar.gz /tmp/scrypto-resources-usage/
-             wget --method PUT --body-file=/tmp/xml_files.tar.gz https://transfer.sh/xml_file_001.tar.gz -O - -nv
+             wget -SO- --method PUT --body-file=/tmp/xml_files.tar.gz https://transfer.sh/xml_file_001.tar.gz -O - -nv
       - name: Results - table summary
         run: cat /tmp/scrypto-resources-usage/_out_table.txt
       - name: Results - native blueprints CSV
