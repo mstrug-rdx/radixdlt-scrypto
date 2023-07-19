@@ -1,5 +1,5 @@
-name: CPU instructions
-run-name: CPU instructions, branch = ${{ github.ref_name }}
+name: QEMU costing - CPU instructions
+run-name: QEMU costing - CPU instructions, branch = ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
@@ -20,7 +20,7 @@ jobs:
         run: |
              sudo apt-get update
              sudo apt-get install build-essential pkg-config ninja-build libglib2.0-dev meson
-             pip3 install lxml tabulate
+             pip3 install lxml tabulate numpy scikit-learn statsmodels
       - name: Setup QEMU v8.0.3
         run: |
              cd ..
