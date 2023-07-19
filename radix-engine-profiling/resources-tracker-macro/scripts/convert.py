@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 #
-# Required python packages: lxml, tabulate. To install run command: pip3 install lxml tabulate
+# Required python packages: lxml, tabulate, numpy, scikit-learn, statsmodels. 
+# To install run command: pip3 install lxml tabulate numpy scikit-learn statsmodels
 #
 
 from lxml import etree
@@ -14,7 +15,8 @@ import numpy as np
 
 
 if len(sys.argv) < 2:
-    print("Usage: convert.py <INPUT_FOLDER>\n\nResults are generaged in:\n/tmp/_out_table.txt, /tmp/native_function_base_costs.csv", file=sys.stderr)
+    print("Usage: convert.py <INPUT_FOLDER_WITH_XML_FILES>\n\nResults are generaged in files:", file=sys.stderr)
+    print(" /tmp/_out_table.txt\n /tmp/_out_table_detailed.txt\n /tmp/_out_linear_regression_coeff.txt\n /tmp/native_function_base_costs.csv", file=sys.stderr)
     sys.exit(-1)
 
 input_folder = sys.argv[1]
@@ -25,7 +27,9 @@ if not os.path.exists(os.path.dirname(input_folder)):
 api_functions_ins = {}
 api_functions_info_data = {}
 
+# Define functions which should be used for linear regression based on size
 kernel_invoke_divide_by_size = [ "publish_native", "publish_wasm_advanced" ]
+
 use_max_instead_of_median = ["kernel_create_wasm_instance"] # due to use of caching
 
 file_list_cnt = 1
@@ -171,9 +175,9 @@ output_tab.sort()
 for idx, item in enumerate(output_tab):
     item.insert(0,idx + 1)
 
-# calculate linear approximation coefficients for selected functions
-tmp_tab = ["publish_native", "publish_wasm_advanced"]
-for s in tmp_tab:
+# calculate linear approximation coefficients for selected functions and write to file
+f = open("/tmp/_out_linear_regression_coeff.txt", "w")
+for s in kernel_invoke_divide_by_size:
     values_size = []
     values_instructions = []
     for row in output_tab:
@@ -183,16 +187,18 @@ for s in tmp_tab:
             size = row[1][last_token_idx:]
             values_size.append(int(size))
             values_instructions.append(int(row[2]))
-            print("found: ", s, " size: ", size, " ins: ", row[2])
     if len(values_size) > 0:
-        print("\nLinear regression of function: ", s)
         x = np.array(values_size).reshape((-1, 1))
         y = np.array(values_instructions)
         model = LinearRegression().fit(x, y)
         r_sq = model.score(x, y)
         intercept = model.intercept_
         slope = model.coef_[0]
-        print("f(size) =", slope, "* size +", intercept)
+        out_str = s + ": " + "instructions(size) = " + str(slope) + " * size + " + str(intercept) + "\n"
+        f.write(out_str)
+    else:
+        print("Linear regression size not found for '",s,"' function.")
+f.close()
 
 
 
