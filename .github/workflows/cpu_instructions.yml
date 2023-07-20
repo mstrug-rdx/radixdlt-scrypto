@@ -44,7 +44,6 @@ jobs:
         run: |
              cd radix-engine-tests
              cargo test --release --no-run --features resource_tracker --test metering
-             rm ./target/release/deps/transaction_multi_threaded-*
       - name: Run tests using QEMU
         run: /usr/bin/python3 ./radix-engine-profiling/resources-tracker-macro/scripts/run_tests.sh ./target/release/deps/
       - name: Generate results
