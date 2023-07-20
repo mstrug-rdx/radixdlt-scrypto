@@ -44,10 +44,11 @@ jobs:
         run: |
              cd radix-engine-tests
              cargo test --release --no-run --features resource_tracker --test metering
+             rm ./target/release/deps/transaction_multi_threaded-* > /dev/null 2>&1
       - name: Run tests using QEMU
-        run: /usr/bin/python3 ./radix-engine-profiling/resources-tracker-macro/scripts/run_tests.sh ./target/release/deps/
+        run: bash ./radix-engine-profiling/resources-tracker-macro/scripts/run_tests.sh ./target/release/deps/
       - name: Generate results
-        run: bash ./radix-engine-profiling/resources-tracker-macro/scripts/convert.py /tmp/scrypto-resources-usage
+        run: python3 ./radix-engine-profiling/resources-tracker-macro/scripts/convert.py /tmp/scrypto-resources-usage
       - name: Results - table summary
         run: cat /tmp/_out_table.txt
       - name: Results - detailed table summary
