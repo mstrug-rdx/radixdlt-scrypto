@@ -42,8 +42,7 @@ jobs:
              sed -i 's/^qemu_plugin.*/qemu_plugin=\/home\/runner\/work\/radixdlt-scrypto\/radixdlt-scrypto\/radix-engine-profiling\/qemu-plugin\/build\/libscrypto-qemu-plugin.so/' ./run_tests.sh
       - name: Build tests
         run: |
-             cd radix-engine-tests
-             cargo test --release --no-run --features resource_tracker --test metering
+             cargo test --release --no-run --features resource_tracker --workspace --exclude radix-engine-common
              rm -f ./target/release/deps/transaction_multi_threaded-*
       - name: Run tests using QEMU
         run: bash ./radix-engine-profiling/resources-tracker-macro/scripts/run_tests.sh ./target/release/deps/
