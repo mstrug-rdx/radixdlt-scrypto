@@ -28,11 +28,9 @@ jobs:
              rm -f ../target/release/deps/*.rmeta
       - name: Cache build results
         uses: actions/cache@v3
-        env:
-          cache-name: cache-radix-engine-tests
         with:
           path: ./target/release/deps
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ github.run_id }}
+          key: ${{ runner.os }}-build-cache-radix-engine-tests-${{ github.run_id }}
           
   build-other-tests:          
     name: Build other tests
@@ -52,11 +50,9 @@ jobs:
              rm -f ./target/release/deps/*.rmeta
       - name: Cache build results
         uses: actions/cache@v3
-        env:
-          cache-name: cache-radix-tests
         with:
           path: ./target/release/deps
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ github.run_id }}
+          key: ${{ runner.os }}-build-cache-radix-tests-${{ github.run_id }}
           
   qemu-build-and-run:
     name: QEMU costing - CPU instructions
@@ -110,6 +106,27 @@ jobs:
           key: ${{ runner.os }}-build-cache-radix-tests-${{ github.run_id }}     
       - name: Run other tests using QEMU
         run: bash ./radix-engine-profiling/resources-tracker-macro/scripts/run_tests.sh ./target/release/deps/
+      - name: Cache QEMU run results
+        uses: actions/cache@v3
+        env:
+          cache-name: cache-qemu-results
+        with:
+          path: ./tmp/scrypto-resources-usage
+          key: ${{ runner.os }}-${{ env.cache-name }}-${{ github.run_id }}
+          
+  generate-results:
+    name: Generate results
+    runs-on: ubuntu-22.04
+    needs: qemu-build-and-run
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup dependencies
+        run: pip3 install lxml tabulate numpy scikit-learn statsmodels
+      - name: Read cache QEMU run results
+        uses: actions/cache@v3
+        with:
+          path: ./tmp/scrypto-resources-usage
+          key: ${{ runner.os }}-cache-qemu-results-${{ github.run_id }}
       - name: Generate results
         run: python3 ./radix-engine-profiling/resources-tracker-macro/scripts/convert.py /tmp/scrypto-resources-usage
       - name: Results - table summary
