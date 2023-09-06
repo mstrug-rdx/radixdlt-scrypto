@@ -93,6 +93,7 @@ jobs:
         with:
           path: ./target/release/deps
           key: ${{ runner.os }}-build-cache-radix-engine-tests-${{ github.run_id }}
+          fail-on-cache-miss: true
       - name: Run radix-engine-tests using QEMU
         run: |
              cd radix-engine-tests
@@ -103,13 +104,14 @@ jobs:
         uses: actions/cache@v3
         with:
           path: ./target/release/deps
-          key: ${{ runner.os }}-build-cache-radix-tests-${{ github.run_id }}     
+          key: ${{ runner.os }}-build-cache-radix-tests-${{ github.run_id }}
+          fail-on-cache-miss: true
       - name: Run other tests using QEMU
         run: bash ./radix-engine-profiling/resources-tracker-macro/scripts/run_tests.sh ./target/release/deps/
       - name: Cache QEMU run results
         uses: actions/cache@v3
         with:
-          path: ./tmp/scrypto-resources-usage
+          path: /tmp/scrypto-resources-usage
           key: ${{ runner.os }}-cache-qemu-results-${{ github.run_id }}
           
   generate-results:
@@ -123,8 +125,9 @@ jobs:
       - name: Read cache QEMU run results
         uses: actions/cache@v3
         with:
-          path: ./tmp/scrypto-resources-usage
+          path: /tmp/scrypto-resources-usage
           key: ${{ runner.os }}-cache-qemu-results-${{ github.run_id }}
+          fail-on-cache-miss: true
       - name: Generate results
         run: python3 ./radix-engine-profiling/resources-tracker-macro/scripts/convert.py /tmp/scrypto-resources-usage
       - name: Results - table summary
