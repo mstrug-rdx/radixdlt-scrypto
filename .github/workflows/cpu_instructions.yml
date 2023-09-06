@@ -92,13 +92,13 @@ jobs:
         uses: actions/cache@v3
         with:
           path: ./target/release/deps
-          key: ${{ runner.os }}-build-cache-radix-engine-test-${{ github.run_id }}
+          key: ${{ runner.os }}-build-cache-radix-engine-tests-${{ github.run_id }}
       - name: Run radix-engine-tests using QEMU
         run: |
              cd radix-engine-tests
              bash ../radix-engine-profiling/resources-tracker-macro/scripts/run_tests.sh ../target/release/deps/
       - name: Prepare for other tests run
-        run: rm ./target/release/deps/*    
+        run: rm -f ./target/release/deps/*    
       - name: Read cache other tests build results
         uses: actions/cache@v3
         with:
@@ -108,11 +108,9 @@ jobs:
         run: bash ./radix-engine-profiling/resources-tracker-macro/scripts/run_tests.sh ./target/release/deps/
       - name: Cache QEMU run results
         uses: actions/cache@v3
-        env:
-          cache-name: cache-qemu-results
         with:
           path: ./tmp/scrypto-resources-usage
-          key: ${{ runner.os }}-${{ env.cache-name }}-${{ github.run_id }}
+          key: ${{ runner.os }}-cache-qemu-results-${{ github.run_id }}
           
   generate-results:
     name: Generate results
