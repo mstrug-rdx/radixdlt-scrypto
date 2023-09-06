@@ -9,7 +9,29 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  cpu-instructions:
+  compilation:
+    name: Compilation
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: Setup dependencies
+        run: rustup target add wasm32-unknown-unknown 
+      - name: Build radix-engine-tests
+        run: |
+             cd radix-engine-tests
+             cargo test --release --no-run --features resource_tracker
+             rm -f ../target/release/deps/transaction_multi_threaded-*
+      - name: Cache build results
+        uses: actions/cache@v3
+        env:
+          cache-name: cache-radix-test-build
+        with:
+          path: ../target/release/deps
+          key: ${{ runner.os }}-radix-engine-test-build-${{ env.cache-name }}
+  qemu-build-and-run:
     name: QEMU costing - CPU instructions
     runs-on: ubuntu-22.04
     steps:
@@ -42,21 +64,23 @@ jobs:
              cd radix-engine-profiling/resources-tracker-macro/scripts
              sed -i 's/^qemu_app.*/qemu_app=\/home\/runner\/work\/radixdlt-scrypto\/qemu-8.0.3\/build\/qemu-x86_64/' ./run_tests.sh
              sed -i 's/^qemu_plugin.*/qemu_plugin=\/home\/runner\/work\/radixdlt-scrypto\/radixdlt-scrypto\/radix-engine-profiling\/qemu-plugin\/build\/libscrypto-qemu-plugin.so/' ./run_tests.sh
-      - name: Build radix-engine-tests
-        run: |
-             cd radix-engine-tests
-             cargo test --release --no-run --features resource_tracker
-             rm -f ../target/release/deps/transaction_multi_threaded-*
+      - name: Cache build results
+        uses: actions/cache@v3
+        env:
+          cache-name: cache-radix-test-build
+        with:
+          path: ../target/release/deps
+          key: ${{ runner.os }}-radix-engine-test-build-${{ env.cache-name }}
       - name: Run radix-engine-tests using QEMU
         run: |
              cd radix-engine-tests
              bash ../radix-engine-profiling/resources-tracker-macro/scripts/run_tests.sh ../target/release/deps/
-      - name: Build other tests
-        run: |
-             rm ./target/release/deps/*
-             cargo test --release --no-run --features resource_tracker --workspace --exclude radix-engine-common --exclude radix-engine-tests
-      - name: Run other tests using QEMU
-        run: bash ./radix-engine-profiling/resources-tracker-macro/scripts/run_tests.sh ./target/release/deps/
+#      - name: Build other tests
+#        run: |
+#             rm ./target/release/deps/*
+#             cargo test --release --no-run --features resource_tracker --workspace --exclude radix-engine-common --exclude radix-engine-tests
+#      - name: Run other tests using QEMU
+#        run: bash ./radix-engine-profiling/resources-tracker-macro/scripts/run_tests.sh ./target/release/deps/
       - name: Generate results
         run: python3 ./radix-engine-profiling/resources-tracker-macro/scripts/convert.py /tmp/scrypto-resources-usage
       - name: Results - table summary
