@@ -130,11 +130,23 @@ jobs:
           fail-on-cache-miss: true
       - name: Generate results
         run: python3 ./radix-engine-profiling/resources-tracker-macro/scripts/convert.py /tmp/scrypto-resources-usage
-      - name: Results - table summary
-        run: cat /tmp/_out_table.txt
-      - name: Results - detailed table summary
-        run: cat /tmp/_out_table_detailed.txt
-      - name: Results - linear regression coefficients
-        run: cat /tmp/_out_linear_regression_coeff.txt
-      - name: Results - native blueprints CSV
-        run: cat /tmp/native_function_base_costs.csv
+      - name: Upload results - table
+        uses: actions/upload-artifact@v3
+        with:
+          name: Table summary
+          path: /tmp/_out_table.txt
+      - name: Upload results - table detailed
+        uses: actions/upload-artifact@v3
+        with:
+          name: Table summary detailed
+          path: /tmp/_out_table_detailed.txt
+      - name: Upload results - linear regression coefficients
+        uses: actions/upload-artifact@v3
+        with:
+          name: Linear regression coefficients
+          path: /tmp/_out_linear_regression_coeff.txt
+      - name: Upload results - native blueprints CSV
+        uses: actions/upload-artifact@v3
+        with:
+          name: Native blueprints CSV
+          path: /tmp/native_function_base_costs.txt
