@@ -34,6 +34,7 @@ jobs:
   qemu-build-and-run:
     name: QEMU costing - CPU instructions
     runs-on: ubuntu-22.04
+    needs: compilation
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
