@@ -83,7 +83,7 @@ jobs:
       - name: Cache QEMU binary
         uses: actions/cache@v3
         with:
-          path: ../qemu-8.0.3/build/qemu-x86_64
+          path: /home/runner/work/radixdlt-scrypto/qemu-8.0.3/build/qemu-x86_64
           key: ${{ runner.os }}-cache-qemu-bin-${{ github.run_id }}
       - name: Cache QEMU plugin
         uses: actions/cache@v3
@@ -105,7 +105,7 @@ jobs:
       - name: Read cache QEMU binary
         uses: actions/cache@v3
         with:
-          path: ../qemu-8.0.3/build/qemu-x86_64
+          path: /home/runner/work/radixdlt-scrypto/qemu-8.0.3/build/qemu-x86_64
           key: ${{ runner.os }}-cache-qemu-bin-${{ github.run_id }}
           fail-on-cache-miss: true
       - name: Read cache QEMU plugin
