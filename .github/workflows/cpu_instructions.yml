@@ -22,15 +22,18 @@ jobs:
       - name: Build radix-engine-tests
         run: |
              cd radix-engine-tests
-             cargo test --release --no-run --features resource_tracker
+             cargo test --release --no-run --features resource_tracker --test fee
              rm -f ../target/release/deps/transaction_multi_threaded-*
+             rm -f ../target/release/deps/*.d
+             rm -f ../target/release/deps/*.rlib
+             rm -f ../target/release/deps/*.rmeta
       - name: Cache build results
         uses: actions/cache@v3
         env:
-          cache-name: cache-radix-test-build
+          cache-name: cache-radix-engine-test
         with:
-          path: ../target/release/deps
-          key: ${{ runner.os }}-radix-engine-test-build-${{ env.cache-name }}
+          path: ./target/release/deps
+          key: ${{ runner.os }}-build-${{ env.cache-name }}
   qemu-build-and-run:
     name: QEMU costing - CPU instructions
     runs-on: ubuntu-22.04
@@ -68,10 +71,10 @@ jobs:
       - name: Cache build results
         uses: actions/cache@v3
         env:
-          cache-name: cache-radix-test-build
+          cache-name: cache-radix-engine-test
         with:
-          path: ../target/release/deps
-          key: ${{ runner.os }}-radix-engine-test-build-${{ env.cache-name }}
+          path: ./target/release/deps
+          key: ${{ runner.os }}-build-${{ env.cache-name }}
       - name: Run radix-engine-tests using QEMU
         run: |
              cd radix-engine-tests
