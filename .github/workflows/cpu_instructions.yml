@@ -148,6 +148,7 @@ jobs:
           fail-on-cache-miss: true
       - name: Run radix-engine-tests using QEMU
         run: |
+             mkdir /tmp/scrypto-resources-usage
              cd radix-engine-tests
              bash ../radix-engine-profiling/resources-tracker-macro/scripts/run_tests.sh ../target/release/deps/
       - name: Cache QEMU run results
