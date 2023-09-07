@@ -141,7 +141,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: ./target/release/deps
-          key: ${{ format('{0}-{1}-{2}', runner.os, bin-cache, github.run_id) }}
+          key: ${{ format('{0}-{1}-{2}', runner.os, matrix.bin-cache, github.run_id) }}
           fail-on-cache-miss: true
       - name: Run radix-engine-tests using QEMU
         run: |
@@ -151,7 +151,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: /tmp/scrypto-resources-usage
-          key: ${{ format('{0}-{1}-{2}-qemu-results', runner.os, bin-cache, github.run_id) }}
+          key: ${{ format('{0}-{1}-{2}-qemu-results', runner.os, matrix.bin-cache, github.run_id) }}
           
   generate-results:
     name: Generate results
