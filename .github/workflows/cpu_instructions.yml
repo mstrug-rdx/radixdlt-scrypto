@@ -110,6 +110,10 @@ jobs:
     name: QEMU costing - CPU instructions
     runs-on: ubuntu-22.04
     needs: [build-radix-engine-tests, build-other-tests, qemu-build]
+    strategy:
+      matrix:
+        bin-cache: ["${{ runner.os }}-build-cache-1-radix-engine-tests-${{ github.run_id }}", "${{ runner.os }}-build-cache-2-radix-engine-tests-${{ github.run_id }}", "${{ runner.os }}-build-cache-radix-tests-${{ github.run_id }}"]
+        #[ ${{ format('{0}-build-cache-1-radix-engine-tests-{1}', runner.os, github.run_id) }}, ${{ format('{0}-build-cache-1-radix-engine-tests-{1}', runner.os, github.run_id) }} ]
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
@@ -134,31 +138,21 @@ jobs:
              cd radix-engine-profiling/resources-tracker-macro/scripts
              sed -i 's/^qemu_app.*/qemu_app=\/home\/runner\/work\/radixdlt-scrypto\/qemu-8.0.3\/build\/qemu-x86_64/' ./run_tests.sh
              sed -i 's/^qemu_plugin.*/qemu_plugin=\/home\/runner\/work\/radixdlt-scrypto\/radixdlt-scrypto\/radix-engine-profiling\/qemu-plugin\/build\/libscrypto-qemu-plugin.so/' ./run_tests.sh
-      - name: Read cache radix-engine-tests build results
+      - name: Read cache build results
         uses: actions/cache@v3
         with:
           path: ./target/release/deps
-          key: ${{ runner.os }}-build-cache-radix-engine-tests-${{ github.run_id }}
+          key: ${{ bin-cache }}
           fail-on-cache-miss: true
       - name: Run radix-engine-tests using QEMU
         run: |
              cd radix-engine-tests
              bash ../radix-engine-profiling/resources-tracker-macro/scripts/run_tests.sh ../target/release/deps/
-      - name: Prepare for other tests run
-        run: rm -f ./target/release/deps/*    
-      - name: Read cache other tests build results
-        uses: actions/cache@v3
-        with:
-          path: ./target/release/deps
-          key: ${{ runner.os }}-build-cache-radix-tests-${{ github.run_id }}
-          fail-on-cache-miss: true
-      - name: Run other tests using QEMU
-        run: bash ./radix-engine-profiling/resources-tracker-macro/scripts/run_tests.sh ./target/release/deps/
       - name: Cache QEMU run results
         uses: actions/cache@v3
         with:
           path: /tmp/scrypto-resources-usage
-          key: ${{ runner.os }}-cache-qemu-results-${{ github.run_id }}
+          key: ${{ format('{0}-qemu-results', bin-cache) }}
           
   generate-results:
     name: Generate results
@@ -168,11 +162,23 @@ jobs:
       - uses: actions/checkout@v3
       - name: Setup dependencies
         run: pip3 install lxml tabulate numpy scikit-learn statsmodels
-      - name: Read cache QEMU run results
+      - name: Read cache QEMU run 1 results
         uses: actions/cache@v3
         with:
           path: /tmp/scrypto-resources-usage
-          key: ${{ runner.os }}-cache-qemu-results-${{ github.run_id }}
+          key: ${{ runner.os }}-build-cache-1-radix-engine-tests-${{ github.run_id }}-qemu-results
+          fail-on-cache-miss: true
+      - name: Read cache QEMU run 2 results
+        uses: actions/cache@v3
+        with:
+          path: /tmp/scrypto-resources-usage
+          key: ${{ runner.os }}-build-cache-2-radix-engine-tests-${{ github.run_id }}-qemu-results
+          fail-on-cache-miss: true
+      - name: Read cache QEMU run 3 results
+        uses: actions/cache@v3
+        with:
+          path: /tmp/scrypto-resources-usage
+          key: ${{ runner.os }}-build-cache-radix-tests-${{ github.run_id }}-qemu-results
           fail-on-cache-miss: true
       - name: Generate results
         run: python3 ./radix-engine-profiling/resources-tracker-macro/scripts/convert.py /tmp/scrypto-resources-usage
