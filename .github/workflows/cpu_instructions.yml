@@ -151,7 +151,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: /tmp/scrypto-resources-usage
-          key: ${{ format('{0}-qemu-results', bin-cache) }}
+          key: ${{ format("{0}-{1}-{2}-qemu-results", runner.os, bin-cache, github.run_id) }}
           
   generate-results:
     name: Generate results
