@@ -48,7 +48,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: ./target/release/deps
-          key: ${{ runner.os }}-build-cache-2-radix-engine-tests-${{ github.run_id }}
+          key: ${{ runner.os }}-build-cache-1-radix-engine-tests-${{ github.run_id }}
           
   build-other-tests:          
     name: Build other tests
